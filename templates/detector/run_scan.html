@@ -1,0 +1,233 @@
+{% extends 'base.html' %}
+
+{% block title %}Pemindaian Berjalan{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Pemindaian Sedang Berjalan</h1>
+        <p class="page-subtitle">Memindai {{ scan.target_url }}</p>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-5">
+        <div class="card mb-4">
+            <div class="card-body text-center py-4">
+                <div id="scanProgress">
+                    <div class="spinner-border text-primary mb-3" style="width: 3rem; height: 3rem;" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <h4 class="mb-2">Memproses...</h4>
+                    <p class="text-secondary mb-3" id="statusText">Memulai pemindaian</p>
+                    
+                    <div class="progress mb-2" style="height: 12px;">
+                        <div class="progress-bar" id="progressBar" role="progressbar" style="width: 0%"></div>
+                    </div>
+                    
+                    <p class="text-secondary small mb-3" id="progressText">
+                        <span id="pagesScanned">0</span> / {{ scan.max_pages }} halaman
+                    </p>
+                    
+                    <a href="{% url 'detector:scan_list' %}" class="btn btn-outline-danger" 
+                       onclick="return confirm('Yakin ingin meninggalkan halaman ini? Scan akan tetap berjalan di background.')">
+                        <i class="bi bi-x-circle me-2"></i> Tinggalkan Halaman
+                    </a>
+                    <p class="text-secondary small mt-2">
+                        <i class="bi bi-info-circle me-1"></i> Scan akan tetap berjalan meskipun Anda meninggalkan halaman ini
+                    </p>
+                </div>
+                
+                <div id="scanComplete" style="display: none;">
+                    <div class="text-success mb-3">
+                        <i class="bi bi-check-circle" style="font-size: 3rem;"></i>
+                    </div>
+                    <h4 class="mb-2">Pemindaian Selesai!</h4>
+                    <p class="text-secondary mb-3">
+                        <span id="finalPages">0</span> halaman dipindai, <span id="finalIssues">0</span> konten negatif terdeteksi
+                    </p>
+                    <a href="" id="viewResultsBtn" class="btn btn-primary btn-lg">
+                        <i class="bi bi-eye me-2"></i> Lihat Hasil
+                    </a>
+                </div>
+                
+                <div id="scanError" style="display: none;">
+                    <div class="text-danger mb-3">
+                        <i class="bi bi-x-circle" style="font-size: 3rem;"></i>
+                    </div>
+                    <h4 class="mb-2">Pemindaian Gagal</h4>
+                    <p class="text-danger mb-3" id="errorText"></p>
+                    <a href="{% url 'detector:start_scan' %}" class="btn btn-primary">
+                        <i class="bi bi-arrow-repeat me-2"></i> Coba Lagi
+                    </a>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title">Detail Pemindaian</h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-6">
+                        <p class="mb-1 text-secondary small">URL Target</p>
+                        <p class="mb-0 fw-bold">{{ scan.target_url|truncatechars:40 }}</p>
+                    </div>
+                    <div class="col-6">
+                        <p class="mb-1 text-secondary small">Maks Halaman</p>
+                        <p class="mb-0 fw-bold">{{ scan.max_pages }}</p>
+                    </div>
+                    <div class="col-6">
+                        <p class="mb-1 text-secondary small">Subdomain</p>
+                        <p class="mb-0 fw-bold">{{ scan.scan_subdomains|yesno:"Ya,Tidak" }}</p>
+                    </div>
+                    <div class="col-6">
+                        <p class="mb-1 text-secondary small">Status</p>
+                        <span class="badge badge-{{ scan.status }}" id="statusBadge">{{ scan.get_status_display }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Live Logs -->
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0"><i class="bi bi-terminal me-2"></i>Log Pemindaian</h5>
+                <span class="badge bg-secondary" id="logCount">0 log</span>
+            </div>
+            <div class="card-body p-0">
+                <div id="logContainer" style="height: 400px; overflow-y: auto; font-family: monospace; font-size: 12px; background: #1a1a2e;">
+                    <div class="p-3" id="logContent">
+                        <div class="text-secondary">Menunggu log...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+.log-entry {
+    padding: 4px 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.log-entry:hover {
+    background: rgba(255,255,255,0.05);
+}
+.log-time {
+    color: #666;
+    margin-right: 8px;
+}
+.log-success { color: #4caf50; }
+.log-error { color: #f44336; }
+.log-warning { color: #ff9800; }
+.log-info { color: #2196f3; }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const scanId = {{ scan.pk }};
+    const maxPages = {{ scan.max_pages }};
+    let lastLogId = 0;
+    let isComplete = false;
+    
+    // Start the scan via AJAX
+    fetch(`/scan/${scanId}/run/`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-CSRFToken': '{{ csrf_token }}'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        isComplete = true;
+        if (data.success) {
+            document.getElementById('scanProgress').style.display = 'none';
+            document.getElementById('scanComplete').style.display = 'block';
+            document.getElementById('finalPages').textContent = data.pages_scanned;
+            document.getElementById('finalIssues').textContent = data.issues_found;
+            document.getElementById('viewResultsBtn').href = data.redirect_url;
+            document.getElementById('statusBadge').className = 'badge badge-completed';
+            document.getElementById('statusBadge').textContent = 'Selesai';
+            document.getElementById('progressBar').style.width = '100%';
+        } else {
+            document.getElementById('scanProgress').style.display = 'none';
+            document.getElementById('scanError').style.display = 'block';
+            document.getElementById('errorText').textContent = data.error;
+            document.getElementById('statusBadge').className = 'badge badge-failed';
+            document.getElementById('statusBadge').textContent = 'Gagal';
+        }
+    })
+    .catch(error => {
+        isComplete = true;
+        document.getElementById('scanProgress').style.display = 'none';
+        document.getElementById('scanError').style.display = 'block';
+        document.getElementById('errorText').textContent = error.message;
+    });
+    
+    // Poll for logs
+    function fetchLogs() {
+        if (isComplete) return;
+        
+        fetch(`/scan/${scanId}/logs/?last_id=${lastLogId}`)
+        .then(response => response.json())
+        .then(data => {
+            // Update progress
+            document.getElementById('pagesScanned').textContent = data.pages_scanned;
+            const progress = (data.pages_scanned / maxPages) * 100;
+            document.getElementById('progressBar').style.width = Math.min(progress, 100) + '%';
+            document.getElementById('statusText').textContent = `Memindai halaman... (${data.pages_scanned}/${maxPages})`;
+            
+            // Add new logs
+            if (data.logs.length > 0) {
+                const logContent = document.getElementById('logContent');
+                
+                // Clear initial message
+                if (lastLogId === 0) {
+                    logContent.innerHTML = '';
+                }
+                
+                data.logs.forEach(log => {
+                    const logEntry = document.createElement('div');
+                    logEntry.className = 'log-entry';
+                    logEntry.innerHTML = `
+                        <span class="log-time">[${log.time}]</span>
+                        <span class="log-${log.type}">${log.message}</span>
+                    `;
+                    logContent.appendChild(logEntry);
+                    lastLogId = log.id;
+                });
+                
+                // Scroll to bottom
+                const container = document.getElementById('logContainer');
+                container.scrollTop = container.scrollHeight;
+                
+                // Update log count
+                document.getElementById('logCount').textContent = lastLogId + ' log';
+            }
+            
+            // Continue polling
+            if (!isComplete) {
+                setTimeout(fetchLogs, 1000);
+            }
+        })
+        .catch(error => {
+            if (!isComplete) {
+                setTimeout(fetchLogs, 2000);
+            }
+        });
+    }
+    
+    // Start polling after a short delay
+    setTimeout(fetchLogs, 500);
+});
+</script>
+{% endblock %}

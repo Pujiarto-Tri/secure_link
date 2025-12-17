@@ -1,0 +1,234 @@
+{% extends 'base.html' %}
+
+{% block title %}Detail Scan #{{ scan.pk }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Detail Pemindaian #{{ scan.pk }}</h1>
+        <p class="page-subtitle">{{ scan.target_url }}</p>
+    </div>
+    <div class="d-flex gap-2">
+        <a href="{% url 'detector:export_csv' %}?scan_id={{ scan.pk }}" class="btn btn-secondary">
+            <i class="bi bi-download me-2"></i> Export CSV
+        </a>
+        <a href="{% url 'detector:scan_list' %}" class="btn btn-secondary">
+            <i class="bi bi-arrow-left me-2"></i> Kembali
+        </a>
+    </div>
+</div>
+
+<!-- Stats -->
+<div class="row g-4 mb-4">
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-icon {{ scan.status }}">
+                {% if scan.status == 'completed' %}
+                <i class="bi bi-check-circle"></i>
+                {% elif scan.status == 'running' %}
+                <i class="bi bi-arrow-repeat"></i>
+                {% elif scan.status == 'failed' %}
+                <i class="bi bi-x-circle"></i>
+                {% else %}
+                <i class="bi bi-clock"></i>
+                {% endif %}
+            </div>
+            <div class="stat-content">
+                <h3>{{ scan.get_status_display }}</h3>
+                <p>Status</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-icon info">
+                <i class="bi bi-file-text"></i>
+            </div>
+            <div class="stat-content">
+                <h3>{{ scan.pages_scanned }}</h3>
+                <p>Halaman Dipindai</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-icon danger">
+                <i class="bi bi-exclamation-triangle"></i>
+            </div>
+            <div class="stat-content">
+                <h3>{{ scan.issues_found }}</h3>
+                <p>Konten Negatif</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-icon primary">
+                <i class="bi bi-clock-history"></i>
+            </div>
+            <div class="stat-content">
+                <h3>{{ scan.created_at|date:"H:i" }}</h3>
+                <p>{{ scan.created_at|date:"d M Y" }}</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <!-- Category Summary -->
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <h5 class="card-title">Ringkasan Kategori</h5>
+            </div>
+            <div class="card-body">
+                {% if category_summary %}
+                    {% for cat in category_summary %}
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <span class="badge badge-{{ cat.category }}">{{ cat.category }}</span>
+                        <span class="fw-bold">{{ cat.count }}</span>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                <p class="text-secondary text-center">Tidak ada konten terdeteksi</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <!-- Pages with Issues -->
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title">Halaman dengan Konten Negatif</h5>
+            </div>
+            <div class="card-body p-0">
+                {% if pages_with_issues %}
+                <div class="table-responsive">
+                    <table class="table mb-0">
+                        <thead>
+                            <tr>
+                                <th>URL</th>
+                                <th>Jumlah Deteksi</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for page in pages_with_issues %}
+                            <tr>
+                                <td>
+                                    <a href="{{ page.url }}" target="_blank" class="table-link">
+                                        {{ page.url|truncatechars:60 }}
+                                        <i class="bi bi-box-arrow-up-right ms-1"></i>
+                                    </a>
+                                </td>
+                                <td><span class="badge badge-danger">{{ page.detection_count }}</span></td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="empty-state py-4">
+                    <i class="bi bi-check-circle"></i>
+                    <h4>Tidak ada masalah</h4>
+                    <p>Tidak ada konten negatif terdeteksi dalam pemindaian ini</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Failed Pages (Timeout/Error) -->
+{% if failed_pages %}
+<div class="card mt-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="card-title"><i class="bi bi-exclamation-triangle text-warning me-2"></i>Halaman Gagal / Timeout</h5>
+        <span class="badge bg-warning text-dark">{{ failed_pages.count }} halaman</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table mb-0">
+                <thead>
+                    <tr>
+                        <th>URL</th>
+                        <th>Error</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for page in failed_pages %}
+                    <tr>
+                        <td>
+                            <a href="{{ page.url }}" target="_blank" class="table-link text-warning">
+                                {{ page.url|truncatechars:70 }}
+                                <i class="bi bi-box-arrow-up-right ms-1"></i>
+                            </a>
+                        </td>
+                        <td><span class="text-danger">{{ page.error_message|default:"Unknown error"|truncatechars:50 }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Detections List -->
+<div class="card mt-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="card-title">Semua Konten Terdeteksi</h5>
+        <span class="badge badge-danger">{{ detections.count }} item</span>
+    </div>
+    <div class="card-body p-0">
+        {% if detections %}
+        <div class="table-responsive">
+            <table class="table mb-0">
+                <thead>
+                    <tr>
+                        <th>Kata Kunci</th>
+                        <th>Kategori</th>
+                        <th>Tingkat</th>
+                        <th>Lokasi</th>
+                        <th>URL</th>
+                        <th>Status</th>
+                        <th>Aksi</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for detection in detections %}
+                    <tr>
+                        <td><span class="text-danger fw-bold">{{ detection.matched_text }}</span></td>
+                        <td><span class="badge badge-{{ detection.category }}">{{ detection.category }}</span></td>
+                        <td><span class="badge badge-{{ detection.severity }}">{{ detection.severity }}</span></td>
+                        <td>{{ detection.location }}</td>
+                        <td class="text-secondary">{{ detection.page.url|truncatechars:30 }}</td>
+                        <td>
+                            {% if detection.is_resolved %}
+                            <span class="badge badge-success">Ditangani</span>
+                            {% elif detection.is_reported %}
+                            <span class="badge badge-info">Dilaporkan</span>
+                            {% else %}
+                            <span class="badge badge-warning">Pending</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <a href="{% url 'detector:detection_detail' detection.pk %}" class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-eye"></i>
+                            </a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state py-4">
+            <i class="bi bi-check-circle"></i>
+            <h4>Bersih!</h4>
+            <p>Tidak ada konten negatif terdeteksi</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

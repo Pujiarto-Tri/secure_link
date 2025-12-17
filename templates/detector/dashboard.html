@@ -1,0 +1,273 @@
+{% extends 'base.html' %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Dashboard</h1>
+        <p class="page-subtitle">Monitoring konten negatif pada lombokbaratkab.go.id</p>
+    </div>
+    <a href="{% url 'detector:start_scan' %}" class="btn btn-primary btn-lg">
+        <i class="bi bi-radar me-2"></i> Mulai Scan Baru
+    </a>
+</div>
+
+<!-- Stats Cards -->
+<div class="row g-4 mb-4">
+    <div class="col-lg-3 col-md-6">
+        <div class="stat-card">
+            <div class="stat-icon primary">
+                <i class="bi bi-search"></i>
+            </div>
+            <div class="stat-content">
+                <h3>{{ total_scans }}</h3>
+                <p>Total Pemindaian</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        <div class="stat-card">
+            <div class="stat-icon info">
+                <i class="bi bi-file-text"></i>
+            </div>
+            <div class="stat-content">
+                <h3>{{ total_pages }}</h3>
+                <p>Halaman Dipindai</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        <div class="stat-card">
+            <div class="stat-icon danger">
+                <i class="bi bi-exclamation-triangle"></i>
+            </div>
+            <div class="stat-content">
+                <h3>{{ total_detections }}</h3>
+                <p>Konten Terdeteksi</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-3 col-md-6">
+        <div class="stat-card">
+            <div class="stat-icon warning">
+                <i class="bi bi-clock"></i>
+            </div>
+            <div class="stat-content">
+                <h3>{{ unresolved_detections }}</h3>
+                <p>Belum Ditangani</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <!-- Detection by Category Chart -->
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title">Deteksi per Kategori</h5>
+                <span class="badge badge-info">{{ weekly_detections }} deteksi minggu ini</span>
+            </div>
+            <div class="card-body">
+                <div class="chart-container">
+                    <canvas id="categoryChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Quick Stats -->
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <h5 class="card-title">Status Penanganan</h5>
+            </div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <span class="text-secondary">Ditangani</span>
+                    <span class="badge badge-success">{{ total_detections|add:"-"|add:unresolved_detections }}</span>
+                </div>
+                <div class="progress mb-4">
+                    {% with handled=total_detections|add:"-"|add:unresolved_detections %}
+                    {% if total_detections > 0 %}
+                    <div class="progress-bar" style="width: {% widthratio handled total_detections 100 %}%"></div>
+                    {% endif %}
+                    {% endwith %}
+                </div>
+                
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <span class="text-secondary">Dilaporkan</span>
+                    <span class="badge badge-info">{{ reported_detections }}</span>
+                </div>
+                <div class="progress mb-4">
+                    {% if total_detections > 0 %}
+                    <div class="progress-bar" style="width: {% widthratio reported_detections total_detections 100 %}%"></div>
+                    {% endif %}
+                </div>
+                
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <span class="text-secondary">Scan Aktif</span>
+                    <span class="badge badge-running">{{ active_scans }}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4 mt-0">
+    <!-- Recent Scans -->
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title">Pemindaian Terbaru</h5>
+                <a href="{% url 'detector:scan_list' %}" class="btn btn-sm btn-secondary">Lihat Semua</a>
+            </div>
+            <div class="card-body p-0">
+                {% if recent_scans %}
+                <div class="table-responsive">
+                    <table class="table mb-0">
+                        <thead>
+                            <tr>
+                                <th>URL</th>
+                                <th>Status</th>
+                                <th>Masalah</th>
+                                <th>Waktu</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for scan in recent_scans %}
+                            <tr>
+                                <td>
+                                    <a href="{% url 'detector:scan_detail' scan.pk %}" class="table-link">
+                                        {{ scan.target_url|truncatechars:40 }}
+                                    </a>
+                                </td>
+                                <td><span class="badge badge-{{ scan.status }}">{{ scan.get_status_display }}</span></td>
+                                <td>{{ scan.issues_found }}</td>
+                                <td class="text-secondary">{{ scan.created_at|timesince }} lalu</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="empty-state">
+                    <i class="bi bi-search"></i>
+                    <h4>Belum ada pemindaian</h4>
+                    <p>Mulai pemindaian pertama Anda untuk mendeteksi konten negatif</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <!-- Recent Detections -->
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title">Konten Belum Ditangani</h5>
+                <a href="{% url 'detector:detection_list' %}?status=unresolved" class="btn btn-sm btn-secondary">Lihat Semua</a>
+            </div>
+            <div class="card-body p-0">
+                {% if recent_unresolved %}
+                <div class="table-responsive">
+                    <table class="table mb-0">
+                        <thead>
+                            <tr>
+                                <th>Kata Kunci</th>
+                                <th>Kategori</th>
+                                <th>URL</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for detection in recent_unresolved %}
+                            <tr>
+                                <td>
+                                    <span class="text-danger fw-bold">{{ detection.matched_text }}</span>
+                                </td>
+                                <td><span class="badge badge-{{ detection.category }}">{{ detection.category }}</span></td>
+                                <td class="text-secondary">{{ detection.page.url|truncatechars:30 }}</td>
+                                <td>
+                                    <a href="{% url 'detector:detection_detail' detection.pk %}" class="btn btn-sm btn-outline-primary">
+                                        <i class="bi bi-eye"></i>
+                                    </a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="empty-state">
+                    <i class="bi bi-check-circle"></i>
+                    <h4>Semua sudah ditangani!</h4>
+                    <p>Tidak ada konten negatif yang belum ditangani</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Category Chart
+const categoryData = {{ detections_by_category|safe }};
+const labels = categoryData.map(item => item.category);
+const data = categoryData.map(item => item.count);
+
+const categoryColors = {
+    'judol': '#ef4444',
+    'obat_penguat': '#f59e0b',
+    'obat_aborsi': '#ff6b6b',
+    'konten_dewasa': '#a855f7',
+    'penipuan': '#fbbf24',
+    'lainnya': '#6366f1'
+};
+
+const backgroundColors = labels.map(label => categoryColors[label] || '#6366f1');
+
+if (categoryData.length > 0) {
+    const ctx = document.getElementById('categoryChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: labels,
+            datasets: [{
+                data: data,
+                backgroundColor: backgroundColors,
+                borderColor: '#1a1a2e',
+                borderWidth: 3
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'right',
+                    labels: {
+                        color: '#a0a0b5',
+                        padding: 20,
+                        font: {
+                            size: 13
+                        }
+                    }
+                }
+            }
+        }
+    });
+} else {
+    document.getElementById('categoryChart').parentElement.innerHTML = `
+        <div class="empty-state">
+            <i class="bi bi-pie-chart"></i>
+            <h4>Belum ada data</h4>
+            <p>Mulai pemindaian untuk melihat statistik</p>
+        </div>
+    `;
+}
+</script>
+{% endblock %}

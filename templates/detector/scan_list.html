@@ -1,0 +1,113 @@
+{% extends 'base.html' %}
+
+{% block title %}Riwayat Pemindaian{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Riwayat Pemindaian</h1>
+        <p class="page-subtitle">Semua sesi pemindaian yang pernah dilakukan</p>
+    </div>
+    <a href="{% url 'detector:start_scan' %}" class="btn btn-primary">
+        <i class="bi bi-plus-lg me-2"></i> Scan Baru
+    </a>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        {% if scans %}
+        <div class="table-responsive">
+            <table class="table mb-0">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>URL Target</th>
+                        <th>Status</th>
+                        <th>Halaman</th>
+                        <th>Masalah</th>
+                        <th>Waktu</th>
+                        <th>Aksi</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for scan in scans %}
+                    <tr>
+                        <td>#{{ scan.pk }}</td>
+                        <td>
+                            <a href="{% url 'detector:scan_detail' scan.pk %}" class="table-link">
+                                {{ scan.target_url|truncatechars:50 }}
+                            </a>
+                        </td>
+                        <td><span class="badge badge-{{ scan.status }}">{{ scan.get_status_display }}</span></td>
+                        <td>{{ scan.pages_scanned }}</td>
+                        <td>
+                            {% if scan.issues_found > 0 %}
+                            <span class="text-danger fw-bold">{{ scan.issues_found }}</span>
+                            {% else %}
+                            <span class="text-success">0</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-secondary">{{ scan.created_at|date:"d M Y H:i" }}</td>
+                        <td>
+                            <a href="{% url 'detector:scan_detail' scan.pk %}" class="btn btn-sm btn-secondary" title="Lihat Detail">
+                                <i class="bi bi-eye"></i>
+                            </a>
+                            {% if scan.status == 'running' %}
+                            <form method="post" action="{% url 'detector:cancel_scan' scan.pk %}" class="d-inline">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-sm btn-danger" title="Tandai Dibatalkan" 
+                                        onclick="return confirm('Tandai scan ini sebagai dibatalkan?')">
+                                    <i class="bi bi-x-circle"></i>
+                                </button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        
+        {% if is_paginated %}
+        <div class="p-4">
+            <nav>
+                <ul class="pagination justify-content-center mb-0">
+                    {% if page_obj.has_previous %}
+                    <li class="page-item">
+                        <a class="page-link" href="?page=1">&laquo; First</a>
+                    </li>
+                    <li class="page-item">
+                        <a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a>
+                    </li>
+                    {% endif %}
+                    
+                    <li class="page-item active">
+                        <span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span>
+                    </li>
+                    
+                    {% if page_obj.has_next %}
+                    <li class="page-item">
+                        <a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a>
+                    </li>
+                    <li class="page-item">
+                        <a class="page-link" href="?page={{ page_obj.paginator.num_pages }}">Last &raquo;</a>
+                    </li>
+                    {% endif %}
+                </ul>
+            </nav>
+        </div>
+        {% endif %}
+        
+        {% else %}
+        <div class="empty-state">
+            <i class="bi bi-search"></i>
+            <h4>Belum ada pemindaian</h4>
+            <p>Mulai pemindaian pertama Anda untuk mendeteksi konten negatif pada website</p>
+            <a href="{% url 'detector:start_scan' %}" class="btn btn-primary mt-3">
+                <i class="bi bi-radar me-2"></i> Mulai Scan
+            </a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,163 @@
+{% extends 'base.html' %}
+
+{% block title %}Detail Deteksi #{{ detection.pk }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Detail Konten Terdeteksi</h1>
+        <p class="page-subtitle">ID: #{{ detection.pk }}</p>
+    </div>
+    <div class="d-flex gap-2">
+        {% if not detection.is_reported %}
+        <form method="post" action="{% url 'detector:mark_reported' detection.pk %}" class="d-inline">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-info">
+                <i class="bi bi-flag me-2"></i> Tandai Dilaporkan
+            </button>
+        </form>
+        {% endif %}
+        {% if not detection.is_resolved %}
+        <form method="post" action="{% url 'detector:mark_resolved' detection.pk %}" class="d-inline">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-success">
+                <i class="bi bi-check-circle me-2"></i> Tandai Ditangani
+            </button>
+        </form>
+        {% endif %}
+        <a href="{% url 'detector:detection_list' %}" class="btn btn-secondary">
+            <i class="bi bi-arrow-left me-2"></i> Kembali
+        </a>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-lg-8">
+        <!-- Main Info -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title">Informasi Deteksi</h5>
+            </div>
+            <div class="card-body">
+                <div class="row mb-4">
+                    <div class="col-md-6">
+                        <p class="text-secondary mb-1">Kata Kunci Terdeteksi</p>
+                        <h4 class="text-danger">{{ detection.matched_text }}</h4>
+                    </div>
+                    <div class="col-md-6">
+                        <p class="text-secondary mb-1">Kategori</p>
+                        <span class="badge badge-{{ detection.category }}" style="font-size: 1rem; padding: 8px 16px;">
+                            {{ detection.category }}
+                        </span>
+                    </div>
+                </div>
+                
+                <div class="row mb-4">
+                    <div class="col-md-4">
+                        <p class="text-secondary mb-1">Tingkat Keparahan</p>
+                        <span class="badge badge-{{ detection.severity }}">{{ detection.severity }}</span>
+                    </div>
+                    <div class="col-md-4">
+                        <p class="text-secondary mb-1">Lokasi</p>
+                        <span class="fw-bold">{{ detection.location }}</span>
+                    </div>
+                    <div class="col-md-4">
+                        <p class="text-secondary mb-1">Waktu Deteksi</p>
+                        <span>{{ detection.detected_at|date:"d M Y H:i" }}</span>
+                    </div>
+                </div>
+                
+                <div class="mb-4">
+                    <p class="text-secondary mb-2">Konteks</p>
+                    <div class="detection-context">
+                        {{ detection.context }}
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Page Info -->
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title">Informasi Halaman</h5>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <p class="text-secondary mb-1">URL</p>
+                    <a href="{{ detection.page.url }}" target="_blank" class="table-link">
+                        {{ detection.page.url }}
+                        <i class="bi bi-box-arrow-up-right ms-2"></i>
+                    </a>
+                </div>
+                
+                <div class="mb-3">
+                    <p class="text-secondary mb-1">Domain</p>
+                    <span>{{ detection.page.domain }}</span>
+                </div>
+                
+                <div class="mb-3">
+                    <p class="text-secondary mb-1">Judul Halaman</p>
+                    <span>{{ detection.page.title|default:"-" }}</span>
+                </div>
+                
+                {% if detection.page.meta_description %}
+                <div class="mb-3">
+                    <p class="text-secondary mb-1">Meta Description</p>
+                    <span class="text-secondary">{{ detection.page.meta_description }}</span>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-lg-4">
+        <!-- Status Card -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title">Status</h5>
+            </div>
+            <div class="card-body">
+                <div class="d-flex align-items-center mb-3">
+                    {% if detection.is_resolved %}
+                    <i class="bi bi-check-circle-fill text-success me-3" style="font-size: 2rem;"></i>
+                    <div>
+                        <p class="mb-0 fw-bold">Sudah Ditangani</p>
+                        <small class="text-secondary">{{ detection.resolved_at|date:"d M Y H:i" }}</small>
+                    </div>
+                    {% elif detection.is_reported %}
+                    <i class="bi bi-flag-fill text-info me-3" style="font-size: 2rem;"></i>
+                    <div>
+                        <p class="mb-0 fw-bold">Sudah Dilaporkan</p>
+                        <small class="text-secondary">{{ detection.reported_at|date:"d M Y H:i" }}</small>
+                    </div>
+                    {% else %}
+                    <i class="bi bi-exclamation-circle-fill text-warning me-3" style="font-size: 2rem;"></i>
+                    <div>
+                        <p class="mb-0 fw-bold">Menunggu Tindakan</p>
+                        <small class="text-secondary">Belum dilaporkan atau ditangani</small>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        
+        <!-- Quick Actions -->
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title">Tindakan Cepat</h5>
+            </div>
+            <div class="card-body">
+                <a href="{{ detection.page.url }}" target="_blank" class="btn btn-outline-primary w-100 mb-2">
+                    <i class="bi bi-box-arrow-up-right me-2"></i> Buka Halaman
+                </a>
+                <a href="{% url 'detector:scan_detail' detection.page.scan_session.pk %}" class="btn btn-outline-primary w-100 mb-2">
+                    <i class="bi bi-search me-2"></i> Lihat Sesi Scan
+                </a>
+                <a href="{% url 'detector:detection_list' %}?category={{ detection.category }}" class="btn btn-outline-primary w-100">
+                    <i class="bi bi-filter me-2"></i> Lihat Kategori Sama
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

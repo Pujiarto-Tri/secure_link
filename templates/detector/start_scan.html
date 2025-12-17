@@ -1,0 +1,179 @@
+{% extends 'base.html' %}
+
+{% block title %}Mulai Scan{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Mulai Pemindaian Baru</h1>
+        <p class="page-subtitle">Pindai website untuk mendeteksi konten negatif</p>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-body">
+                <form method="post" action="{% url 'detector:start_scan' %}">
+                    {% csrf_token %}
+                    
+                    <div class="mb-4">
+                        <label for="target_url" class="form-label">URL Target</label>
+                        <input type="text" class="form-control" id="target_url" name="target_url" 
+                               placeholder="https://lombokbaratkab.go.id" 
+                               value="https://lombokbaratkab.go.id" required>
+                        <div class="form-text text-secondary mt-2">
+                            Masukkan URL website yang akan dipindai. Sistem akan melakukan crawling pada halaman dan link yang ditemukan.
+                        </div>
+                    </div>
+                    
+                    <!-- Deep Scan Toggle -->
+                    <div class="mb-4">
+                        <div class="card bg-dark border-primary">
+                            <div class="card-body py-3">
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" id="deep_scan" name="deep_scan" 
+                                           style="width: 50px; height: 25px;">
+                                    <label class="form-check-label ms-2" for="deep_scan">
+                                        <strong class="text-primary"><i class="bi bi-search-heart me-2"></i>Deep Scan Mode</strong>
+                                        <br>
+                                        <small class="text-secondary">Pindai SELURUH halaman website tanpa batas (bisa memakan waktu berjam-jam)</small>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4" id="maxPagesSection">
+                        <label for="max_pages" class="form-label">Maksimum Halaman</label>
+                        <input type="number" class="form-control" id="max_pages" name="max_pages" 
+                               value="100" min="1">
+                        <div class="form-text text-secondary mt-2">
+                            Jumlah maksimum halaman yang akan dipindai. Semakin banyak halaman, semakin lama waktu pemindaian.
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="scan_subdomains" name="scan_subdomains" checked>
+                            <label class="form-check-label" for="scan_subdomains">
+                                Pindai Subdomain
+                            </label>
+                        </div>
+                        <div class="form-text text-secondary mt-2">
+                            Jika diaktifkan, sistem juga akan memindai subdomain seperti diskominfo.lombokbaratkab.go.id, dinas.lombokbaratkab.go.id, dll.
+                        </div>
+                    </div>
+                    
+                    <div class="d-flex gap-3">
+                        <button type="submit" class="btn btn-primary btn-lg" id="submitBtn">
+                            <i class="bi bi-radar me-2"></i> Mulai Pemindaian
+                        </button>
+                        <a href="{% url 'detector:dashboard' %}" class="btn btn-secondary btn-lg">
+                            Batal
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-lg-4">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title"><i class="bi bi-speedometer2 me-2"></i>Mode Scan</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-sm">
+                    <tr>
+                        <td><strong>Quick Scan</strong></td>
+                        <td>50-100 halaman</td>
+                        <td class="text-secondary">~2 menit</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Standard</strong></td>
+                        <td>200-500 halaman</td>
+                        <td class="text-secondary">~10 menit</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Deep Scan</strong></td>
+                        <td>Tanpa batas</td>
+                        <td class="text-secondary">1-5 jam</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title">Informasi</h5>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info">
+                    <i class="bi bi-info-circle me-2"></i>
+                    <strong>Tips Pemindaian</strong>
+                </div>
+                <ul class="text-secondary" style="padding-left: 20px;">
+                    <li class="mb-2">Quick scan: untuk pengecekan rutin</li>
+                    <li class="mb-2">Standard: untuk audit berkala</li>
+                    <li class="mb-2">Deep scan: untuk audit menyeluruh</li>
+                    <li class="mb-2">Aktifkan subdomain untuk cakupan penuh</li>
+                </ul>
+                
+                <hr class="my-4" style="border-color: var(--border-color);">
+                
+                <div class="alert alert-warning">
+                    <i class="bi bi-shield-exclamation me-2"></i>
+                    <strong>Perhatian</strong>
+                </div>
+                <p class="text-secondary small">
+                    Pastikan Anda memiliki izin untuk melakukan pemindaian pada website target. 
+                    Deep scan bisa memakan waktu berjam-jam untuk website besar.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function() {
+    console.log('Deep scan script loaded');
+    
+    const deepScan = document.getElementById('deep_scan');
+    const maxPagesSection = document.getElementById('maxPagesSection');
+    const maxPagesInput = document.getElementById('max_pages');
+    const submitBtn = document.getElementById('submitBtn');
+    
+    if (!deepScan) {
+        console.error('deep_scan element not found');
+        return;
+    }
+    
+    console.log('Elements found, adding listener');
+    
+    function updateDeepScan() {
+        console.log('Deep scan toggled:', deepScan.checked);
+        if (deepScan.checked) {
+            if (maxPagesSection) maxPagesSection.style.display = 'none';
+            if (maxPagesInput) maxPagesInput.value = '99999';
+            if (submitBtn) {
+                submitBtn.innerHTML = '<i class="bi bi-search-heart me-2"></i> Mulai Deep Scan';
+                submitBtn.className = 'btn btn-danger btn-lg';
+            }
+        } else {
+            if (maxPagesSection) maxPagesSection.style.display = 'block';
+            if (maxPagesInput) maxPagesInput.value = '100';
+            if (submitBtn) {
+                submitBtn.innerHTML = '<i class="bi bi-radar me-2"></i> Mulai Pemindaian';
+                submitBtn.className = 'btn btn-primary btn-lg';
+            }
+        }
+    }
+    
+    deepScan.addEventListener('change', updateDeepScan);
+    deepScan.addEventListener('click', updateDeepScan);
+})();
+</script>
+{% endblock %}

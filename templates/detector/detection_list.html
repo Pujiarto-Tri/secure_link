@@ -1,0 +1,175 @@
+{% extends 'base.html' %}
+
+{% block title %}Konten Terdeteksi{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Konten Terdeteksi</h1>
+        <p class="page-subtitle">Daftar semua konten negatif yang terdeteksi</p>
+    </div>
+    <a href="{% url 'detector:export_csv' %}{% if current_category %}?category={{ current_category }}{% endif %}{% if current_status %}&status={{ current_status }}{% endif %}" class="btn btn-secondary">
+        <i class="bi bi-download me-2"></i> Export CSV
+    </a>
+</div>
+
+<!-- Filters -->
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="get" class="row g-3 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label">Kategori</label>
+                <select name="category" class="form-select">
+                    <option value="">-- Semua Kategori --</option>
+                    {% for value, label in categories %}
+                    <option value="{{ value }}" {% if value == current_category %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Status</label>
+                <select name="status" class="form-select">
+                    <option value="">-- Semua Status --</option>
+                    <option value="unresolved" {% if current_status == 'unresolved' %}selected{% endif %}>Belum Ditangani</option>
+                    <option value="reported" {% if current_status == 'reported' %}selected{% endif %}>Sudah Dilaporkan</option>
+                    <option value="resolved" {% if current_status == 'resolved' %}selected{% endif %}>Sudah Ditangani</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Tingkat Keparahan</label>
+                <select name="severity" class="form-select">
+                    <option value="">-- Semua --</option>
+                    <option value="high" {% if current_severity == 'high' %}selected{% endif %}>Tinggi</option>
+                    <option value="medium" {% if current_severity == 'medium' %}selected{% endif %}>Sedang</option>
+                    <option value="low" {% if current_severity == 'low' %}selected{% endif %}>Rendah</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <button type="submit" class="btn btn-primary w-100">
+                    <i class="bi bi-filter me-2"></i> Filter
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Bulk Actions -->
+<form method="post" action="{% url 'detector:bulk_action' %}" id="bulkForm">
+    {% csrf_token %}
+    <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0">Hasil ({{ page_obj.paginator.count }} item)</h5>
+            <div class="d-flex gap-2">
+                <select name="action" class="form-select form-select-sm" style="width: auto;">
+                    <option value="">-- Aksi Bulk --</option>
+                    <option value="mark_reported">Tandai Dilaporkan</option>
+                    <option value="mark_resolved">Tandai Ditangani</option>
+                </select>
+                <button type="submit" class="btn btn-sm btn-secondary">Terapkan</button>
+            </div>
+        </div>
+        <div class="card-body p-0">
+            {% if detections %}
+            <div class="table-responsive">
+                <table class="table mb-0">
+                    <thead>
+                        <tr>
+                            <th><input type="checkbox" id="selectAll" class="form-check-input"></th>
+                            <th>Kata Kunci</th>
+                            <th>Kategori</th>
+                            <th>Tingkat</th>
+                            <th>Lokasi</th>
+                            <th>URL</th>
+                            <th>Status</th>
+                            <th>Waktu</th>
+                            <th>Aksi</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for detection in detections %}
+                        <tr>
+                            <td>
+                                <input type="checkbox" name="detection_ids" value="{{ detection.pk }}" class="form-check-input detection-checkbox">
+                            </td>
+                            <td><span class="text-danger fw-bold">{{ detection.matched_text }}</span></td>
+                            <td><span class="badge badge-{{ detection.category }}">{{ detection.category }}</span></td>
+                            <td><span class="badge badge-{{ detection.severity }}">{{ detection.severity }}</span></td>
+                            <td>{{ detection.location }}</td>
+                            <td>
+                                <a href="{{ detection.page.url }}" target="_blank" class="text-secondary">
+                                    {{ detection.page.url|truncatechars:30 }}
+                                    <i class="bi bi-box-arrow-up-right ms-1"></i>
+                                </a>
+                            </td>
+                            <td>
+                                {% if detection.is_resolved %}
+                                <span class="badge badge-success">Ditangani</span>
+                                {% elif detection.is_reported %}
+                                <span class="badge badge-info">Dilaporkan</span>
+                                {% else %}
+                                <span class="badge badge-warning">Pending</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-secondary">{{ detection.detected_at|timesince }}</td>
+                            <td>
+                                <a href="{% url 'detector:detection_detail' detection.pk %}" class="btn btn-sm btn-outline-primary">
+                                    <i class="bi bi-eye"></i>
+                                </a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            
+            {% if is_paginated %}
+            <div class="p-4">
+                <nav>
+                    <ul class="pagination justify-content-center mb-0">
+                        {% if page_obj.has_previous %}
+                        <li class="page-item">
+                            <a class="page-link" href="?page=1{% if current_category %}&category={{ current_category }}{% endif %}{% if current_status %}&status={{ current_status }}{% endif %}">&laquo;</a>
+                        </li>
+                        <li class="page-item">
+                            <a class="page-link" href="?page={{ page_obj.previous_page_number }}{% if current_category %}&category={{ current_category }}{% endif %}{% if current_status %}&status={{ current_status }}{% endif %}">Previous</a>
+                        </li>
+                        {% endif %}
+                        
+                        <li class="page-item active">
+                            <span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span>
+                        </li>
+                        
+                        {% if page_obj.has_next %}
+                        <li class="page-item">
+                            <a class="page-link" href="?page={{ page_obj.next_page_number }}{% if current_category %}&category={{ current_category }}{% endif %}{% if current_status %}&status={{ current_status }}{% endif %}">Next</a>
+                        </li>
+                        <li class="page-item">
+                            <a class="page-link" href="?page={{ page_obj.paginator.num_pages }}{% if current_category %}&category={{ current_category }}{% endif %}{% if current_status %}&status={{ current_status }}{% endif %}">&raquo;</a>
+                        </li>
+                        {% endif %}
+                    </ul>
+                </nav>
+            </div>
+            {% endif %}
+            
+            {% else %}
+            <div class="empty-state">
+                <i class="bi bi-check-circle"></i>
+                <h4>Tidak ada konten terdeteksi</h4>
+                <p>Belum ada konten negatif yang terdeteksi dengan filter yang dipilih</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</form>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Select All checkbox
+document.getElementById('selectAll').addEventListener('change', function() {
+    const checkboxes = document.querySelectorAll('.detection-checkbox');
+    checkboxes.forEach(cb => cb.checked = this.checked);
+});
+</script>
+{% endblock %}
