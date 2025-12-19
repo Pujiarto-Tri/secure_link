@@ -130,18 +130,26 @@ class RunScanView(View):
             parsed = urlparse(scan_session.target_url)
             domain = parsed.netloc
             
-            # Inisialisasi scraper - TELITI (timeout 30s, sequential untuk stabilitas)
+            # Inisialisasi detector SEBELUM crawling agar bisa deteksi real-time
+            detector = ContentDetector()
+            active_keywords = Keyword.objects.filter(is_active=True)
+            detector.load_keywords_from_db(active_keywords)
+            
+            # Counter untuk total issues (menggunakan list agar bisa dimodifikasi dalam closure)
+            total_issues = [0]
+            
+            # Inisialisasi scraper
             scraper = WebScraper(
                 base_domain=domain,
                 delay=0.2,
-                timeout=30,  # 30 detik untuk website lambat
+                timeout=30,
                 max_pages=scan_session.max_pages,
                 scan_subdomains=scan_session.scan_subdomains,
-                max_workers=3  # 3 concurrent untuk stabilitas
+                max_workers=3
             )
             
-            # Callback untuk logging setiap halaman + cek pembatalan
-            def log_progress(result, pages_scraped, max_pages):
+            # Callback untuk REAL-TIME processing: crawl + detect + save
+            def process_page_realtime(result, pages_scraped, max_pages):
                 # Cek apakah scan dibatalkan
                 if scan_session.should_stop():
                     ScanLog.objects.create(
@@ -149,10 +157,12 @@ class RunScanView(View):
                         log_type='warning',
                         message='Scan dibatalkan oleh pengguna'
                     )
-                    scraper.cancel()  # Stop the scraper
+                    scraper.cancel()
                     return
                 
                 url = result.get('url', '')
+                
+                # Log progress
                 if result.get('success'):
                     ScanLog.objects.create(
                         scan_session=scan_session,
@@ -161,7 +171,6 @@ class RunScanView(View):
                         url=url
                     )
                 else:
-                    # Tampilkan URL yang gagal beserta error-nya
                     error_msg = result.get('error', 'Unknown error')
                     ScanLog.objects.create(
                         scan_session=scan_session,
@@ -169,31 +178,8 @@ class RunScanView(View):
                         message=f'[{pages_scraped}/{max_pages}] Gagal: {url[:60]} - {error_msg}',
                         url=url
                     )
-                # Update progress di database
-                scan_session.pages_scanned = pages_scraped
-                scan_session.save(update_fields=['pages_scanned'])
-            
-            # Jalankan crawling dengan callback
-            results = scraper.crawl(scan_session.target_url, callback=log_progress)
-            
-            ScanLog.objects.create(
-                scan_session=scan_session,
-                log_type='info',
-                message=f'Crawling selesai. Memproses {len(results)} halaman...'
-            )
-            
-            # Inisialisasi detector
-            detector = ContentDetector()
-            
-            # Load keywords dari database
-            active_keywords = Keyword.objects.filter(is_active=True)
-            detector.load_keywords_from_db(active_keywords)
-            
-            total_issues = 0
-            
-            # Proses setiap halaman
-            for result in results:
-                # Simpan halaman
+                
+                # SIMPAN halaman ke database SEGERA
                 page, created = ScrapedPage.objects.get_or_create(
                     scan_session=scan_session,
                     url=result['url'],
@@ -209,15 +195,14 @@ class RunScanView(View):
                     }
                 )
                 
+                # DETEKSI konten negatif SEGERA (real-time)
                 if result.get('success'):
-                    # Deteksi konten negatif
                     detections = detector.detect_in_sections(
                         title=result.get('title', ''),
                         meta_description=result.get('meta_description', ''),
                         content=result.get('content', '')
                     )
                     
-                    # Simpan hasil deteksi
                     for detection in detections:
                         keyword_obj = Keyword.objects.filter(
                             keyword__iexact=detection['keyword'],
@@ -233,31 +218,47 @@ class RunScanView(View):
                             severity=detection.get('severity', 'medium'),
                             location=detection.get('location', 'content')
                         )
-                        total_issues += 1
+                        total_issues[0] += 1
                         
-                        # Log deteksi
+                        # Log DETEKSI dengan format khusus agar bisa di-parse di frontend
+                        category_display = {
+                            'judol': 'Judi Online',
+                            'obat_penguat': 'Obat Penguat',
+                            'obat_aborsi': 'Obat Aborsi',
+                            'konten_dewasa': 'Konten Dewasa',
+                            'penipuan': 'Penipuan'
+                        }.get(detection['category'], detection['category'])
+                        
                         ScanLog.objects.create(
                             scan_session=scan_session,
                             log_type='warning',
-                            message=f'TERDETEKSI: "{detection["matched_text"]}" ({detection["category"]})',
-                            url=result['url']
+                            message=f'🚨 TERDETEKSI: "{detection["matched_text"][:50]}" [{category_display}]',
+                            url=url
                         )
+                
+                # Update progress
+                scan_session.pages_scanned = pages_scraped
+                scan_session.issues_found = total_issues[0]
+                scan_session.save(update_fields=['pages_scanned', 'issues_found'])
             
-            # Update scan session
+            # Jalankan crawling dengan real-time processing
+            results = scraper.crawl(scan_session.target_url, callback=process_page_realtime)
+            
+            # Update final stats
             scan_session.pages_scanned = len(results)
-            scan_session.issues_found = total_issues
+            scan_session.issues_found = total_issues[0]
             scan_session.complete()
             
             ScanLog.objects.create(
                 scan_session=scan_session,
                 log_type='success',
-                message=f'Scan selesai! {len(results)} halaman, {total_issues} konten negatif'
+                message=f'✅ Scan selesai! {len(results)} halaman, {total_issues[0]} konten negatif'
             )
             
             return JsonResponse({
                 'success': True,
                 'pages_scanned': len(results),
-                'issues_found': total_issues,
+                'issues_found': total_issues[0],
                 'redirect_url': f'/scan/{scan_session.pk}/'
             })
             
@@ -296,21 +297,27 @@ class CancelScanView(View):
 
 
 class ScanLogsView(View):
-    """API endpoint untuk mengambil log scan real-time"""
+    """API endpoint untuk mengambil log scan real-time + deteksi"""
     
     def get(self, request, pk):
         scan_session = get_object_or_404(ScanSession, pk=pk)
         
-        # Get last N logs
+        # Get last N logs (exclude detection warnings - those go to separate card)
         last_id = request.GET.get('last_id', 0)
+        last_detection_id = request.GET.get('last_detection_id', 0)
         try:
             last_id = int(last_id)
+            last_detection_id = int(last_detection_id)
         except:
             last_id = 0
+            last_detection_id = 0
         
+        # Filter out detection logs (yang ada 🚨) dari log biasa
         logs = ScanLog.objects.filter(
             scan_session=scan_session,
             id__gt=last_id
+        ).exclude(
+            message__contains='🚨'
         ).order_by('id')[:50]
         
         logs_data = [{
@@ -321,11 +328,38 @@ class ScanLogsView(View):
             'time': log.created_at.strftime('%H:%M:%S')
         } for log in logs]
         
+        # Get new detections
+        detections = DetectedContent.objects.filter(
+            page__scan_session=scan_session,
+            id__gt=last_detection_id
+        ).select_related('page', 'keyword').order_by('id')[:20]
+        
+        # Map category to display name
+        category_map = {
+            'judol': 'Judi Online',
+            'obat_penguat': 'Obat Penguat',
+            'obat_aborsi': 'Obat Aborsi',
+            'konten_dewasa': 'Konten Dewasa',
+            'penipuan': 'Penipuan',
+            'lainnya': 'Lainnya'
+        }
+        
+        detections_data = [{
+            'id': det.id,
+            'url': det.page.url,
+            'keyword': det.matched_text[:50],
+            'category': category_map.get(det.category, det.category),
+            'severity': det.severity,
+            'time': det.detected_at.strftime('%H:%M:%S')
+        } for det in detections]
+        
         return JsonResponse({
             'status': scan_session.status,
             'pages_scanned': scan_session.pages_scanned,
             'max_pages': scan_session.max_pages,
-            'logs': logs_data
+            'issues_found': scan_session.issues_found,
+            'logs': logs_data,
+            'detections': detections_data
         })
 
 

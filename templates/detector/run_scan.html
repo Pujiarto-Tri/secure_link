@@ -93,16 +93,43 @@
     
     <!-- Live Logs -->
     <div class="col-lg-7">
-        <div class="card">
+        <div class="card mb-4">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="card-title mb-0"><i class="bi bi-terminal me-2"></i>Log Pemindaian</h5>
                 <span class="badge bg-secondary" id="logCount">0 log</span>
             </div>
             <div class="card-body p-0">
-                <div id="logContainer" style="height: 400px; overflow-y: auto; font-family: monospace; font-size: 12px; background: #1a1a2e;">
+                <div id="logContainer" style="height: 300px; overflow-y: auto; font-family: monospace; font-size: 12px; background: #1a1a2e;">
                     <div class="p-3" id="logContent">
                         <div class="text-secondary">Menunggu log...</div>
                     </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Detected Links Card -->
+        <div class="card" id="detectedCard" style="display: none;">
+            <div class="card-header d-flex justify-content-between align-items-center bg-danger bg-opacity-10">
+                <h5 class="card-title mb-0 text-danger">
+                    <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                    Konten Terdeteksi
+                </h5>
+                <span class="badge bg-danger" id="detectionCount">0</span>
+            </div>
+            <div class="card-body p-0">
+                <div id="detectedContainer" style="max-height: 250px; overflow-y: auto;">
+                    <table class="table table-sm mb-0">
+                        <thead>
+                            <tr>
+                                <th style="width: 40%">URL</th>
+                                <th style="width: 25%">Keyword</th>
+                                <th style="width: 20%">Kategori</th>
+                                <th style="width: 15%">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="detectedList">
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -113,7 +140,7 @@
 {% block extra_css %}
 <style>
 .log-entry {
-    padding: 4px 8px;
+    padding: 6px 10px;
     border-bottom: 1px solid rgba(255,255,255,0.05);
 }
 .log-entry:hover {
@@ -127,6 +154,36 @@
 .log-error { color: #f44336; }
 .log-warning { color: #ff9800; }
 .log-info { color: #2196f3; }
+
+/* Detection entries - highlighted */
+.log-detection {
+    color: #ff5722;
+    font-weight: 500;
+    background: rgba(255, 87, 34, 0.1);
+    padding: 4px 8px;
+    border-radius: 4px;
+    display: inline-block;
+}
+
+.detection-link {
+    color: #fff !important;
+    background: #6366f1;
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin-left: 10px;
+    font-size: 11px;
+    text-decoration: none !important;
+    transition: all 0.2s;
+}
+
+.detection-link:hover {
+    background: #4f46e5;
+    transform: translateY(-1px);
+}
+
+.detection-link i {
+    font-size: 10px;
+}
 </style>
 {% endblock %}
 
@@ -173,11 +230,13 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('errorText').textContent = error.message;
     });
     
-    // Poll for logs
+    // Poll for logs and detections
+    let lastDetectionId = 0;
+    
     function fetchLogs() {
         if (isComplete) return;
         
-        fetch(`/scan/${scanId}/logs/?last_id=${lastLogId}`)
+        fetch(`/scan/${scanId}/logs/?last_id=${lastLogId}&last_detection_id=${lastDetectionId}`)
         .then(response => response.json())
         .then(data => {
             // Update progress
@@ -212,6 +271,37 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 // Update log count
                 document.getElementById('logCount').textContent = lastLogId + ' log';
+            }
+            
+            // Add new detections to the detection card
+            if (data.detections && data.detections.length > 0) {
+                const detectedCard = document.getElementById('detectedCard');
+                const detectedList = document.getElementById('detectedList');
+                
+                // Show the detection card
+                detectedCard.style.display = 'block';
+                
+                data.detections.forEach(det => {
+                    const row = document.createElement('tr');
+                    row.className = 'detection-row';
+                    row.innerHTML = `
+                        <td class="text-truncate" style="max-width: 200px;" title="${det.url}">
+                            ${det.url.replace(/^https?:\/\//, '').substring(0, 40)}...
+                        </td>
+                        <td><span class="badge badge-danger">${det.keyword}</span></td>
+                        <td><span class="badge badge-warning">${det.category}</span></td>
+                        <td>
+                            <a href="${det.url}" target="_blank" class="btn btn-sm btn-primary">
+                                <i class="bi bi-box-arrow-up-right"></i> Buka
+                            </a>
+                        </td>
+                    `;
+                    detectedList.appendChild(row);
+                    lastDetectionId = det.id;
+                });
+                
+                // Update detection count
+                document.getElementById('detectionCount').textContent = data.issues_found || detectedList.children.length;
             }
             
             // Continue polling
