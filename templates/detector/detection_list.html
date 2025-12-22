@@ -112,9 +112,15 @@
                             </td>
                             <td class="text-secondary">{{ detection.detected_at|timesince }}</td>
                             <td>
-                                <a href="{% url 'detector:detection_detail' detection.pk %}" class="btn btn-sm btn-outline-primary">
+                                <a href="{% url 'detector:detection_detail' detection.pk %}" class="btn btn-sm btn-outline-primary" title="Detail">
                                     <i class="bi bi-eye"></i>
                                 </a>
+                                <button type="button" class="btn btn-sm btn-outline-success whitelist-btn" 
+                                    data-url="{{ detection.page.url }}" 
+                                    data-keyword="{{ detection.matched_text }}"
+                                    title="Tambahkan ke Whitelist">
+                                    <i class="bi bi-shield-check"></i>
+                                </button>
                             </td>
                         </tr>
                         {% endfor %}
@@ -162,6 +168,18 @@
         </div>
     </div>
 </form>
+
+<!-- Toast for whitelist notification -->
+<div class="toast-container position-fixed bottom-0 end-0 p-3">
+    <div id="whitelistToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+        <div class="toast-header">
+            <i class="bi bi-shield-check me-2 text-success"></i>
+            <strong class="me-auto">Whitelist</strong>
+            <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+        <div class="toast-body" id="toastMessage"></div>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -170,6 +188,78 @@
 document.getElementById('selectAll').addEventListener('change', function() {
     const checkboxes = document.querySelectorAll('.detection-checkbox');
     checkboxes.forEach(cb => cb.checked = this.checked);
+});
+
+// Toast function
+function showToast(message, type) {
+    const toastEl = document.getElementById('whitelistToast');
+    const toastBody = document.getElementById('toastMessage');
+    const toastIcon = toastEl.querySelector('.toast-header i');
+    
+    toastBody.textContent = message;
+    
+    if (type === 'error') {
+        toastIcon.className = 'bi bi-x-circle me-2 text-danger';
+    } else {
+        toastIcon.className = 'bi bi-shield-check me-2 text-success';
+    }
+    
+    const toast = new bootstrap.Toast(toastEl);
+    toast.show();
+}
+
+// Whitelist button click handler
+document.querySelectorAll('.whitelist-btn').forEach(btn => {
+    btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        const url = this.dataset.url;
+        const keyword = this.dataset.keyword;
+        const button = this;
+        
+        // Disable button while processing
+        button.disabled = true;
+        button.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+        
+        fetch('/whitelist/add/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': '{{ csrf_token }}'
+            },
+            body: JSON.stringify({
+                url: url,
+                keyword: keyword,
+                whitelist_type: 'keyword_url',
+                reason: 'Ditambahkan dari halaman deteksi'
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // Show success state
+                button.classList.remove('btn-outline-success');
+                button.classList.add('btn-success');
+                button.innerHTML = '<i class="bi bi-check-lg"></i>';
+                button.title = 'Sudah di-whitelist';
+                
+                // Show toast
+                showToast(data.message || 'Berhasil ditambahkan ke whitelist', 'success');
+            } else {
+                // Reset button
+                button.disabled = false;
+                button.innerHTML = '<i class="bi bi-shield-check"></i>';
+                showToast(data.error || 'Gagal menambahkan ke whitelist', 'error');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            button.disabled = false;
+            button.innerHTML = '<i class="bi bi-shield-check"></i>';
+            showToast('Terjadi kesalahan', 'error');
+        });
+    });
 });
 </script>
 {% endblock %}
