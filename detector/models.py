@@ -190,3 +190,42 @@ class ScanLog(models.Model):
     def __str__(self):
         return f"[{self.log_type}] {self.message[:50]}"
 
+
+class Whitelist(models.Model):
+    """URL yang dikecualikan dari deteksi (untuk menghindari false positive)"""
+    
+    TYPE_CHOICES = [
+        ('url', 'URL Spesifik'),
+        ('domain', 'Domain'),
+        ('keyword_url', 'Keyword + URL'),
+    ]
+    
+    url = models.URLField(max_length=500, verbose_name='URL')
+    domain = models.CharField(max_length=200, blank=True, verbose_name='Domain')
+    keyword = models.CharField(max_length=200, blank=True, verbose_name='Keyword (opsional)')
+    whitelist_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default='url', verbose_name='Tipe Whitelist')
+    reason = models.TextField(blank=True, verbose_name='Alasan Whitelist')
+    is_active = models.BooleanField(default=True, verbose_name='Aktif')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = 'Whitelist'
+        verbose_name_plural = 'Whitelist'
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        if self.whitelist_type == 'domain':
+            return f"Domain: {self.domain}"
+        elif self.whitelist_type == 'keyword_url':
+            return f"{self.keyword} di {self.url[:50]}"
+        return self.url[:50]
+    
+    def save(self, *args, **kwargs):
+        # Auto-extract domain from URL if not provided
+        if not self.domain and self.url:
+            from urllib.parse import urlparse
+            parsed = urlparse(self.url)
+            self.domain = parsed.netloc
+        super().save(*args, **kwargs)
+

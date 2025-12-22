@@ -61,6 +61,7 @@ class ContentDetector:
             custom_keywords: Dictionary dengan kategori sebagai key dan list kata kunci sebagai value
         """
         self.keywords = self.DEFAULT_KEYWORDS.copy()
+        self.whitelist = []  # Initialize whitelist
         if custom_keywords:
             for category, words in custom_keywords.items():
                 if category in self.keywords:
@@ -81,6 +82,53 @@ class ContentDetector:
                     self.keywords[kw.category].append(kw.keyword.lower())
             else:
                 self.keywords[kw.category] = [kw.keyword.lower()]
+    
+    def load_whitelist_from_db(self, whitelist_queryset):
+        """
+        Load daftar whitelist dari database
+        
+        Args:
+            whitelist_queryset: QuerySet dari model Whitelist (yang aktif)
+        """
+        self.whitelist = []
+        for wl in whitelist_queryset:
+            self.whitelist.append({
+                'url': wl.url,
+                'domain': wl.domain,
+                'keyword': wl.keyword.lower() if wl.keyword else '',
+                'type': wl.whitelist_type,
+            })
+    
+    def is_whitelisted(self, url: str, keyword: str = None) -> bool:
+        """
+        Cek apakah URL atau keyword tertentu di-whitelist
+        
+        Args:
+            url: URL halaman yang sedang dicek
+            keyword: Keyword yang terdeteksi (opsional)
+            
+        Returns:
+            True jika URL/keyword di-whitelist, False jika tidak
+        """
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        current_domain = parsed.netloc
+        
+        for wl in self.whitelist:
+            if wl['type'] == 'domain' and wl['domain']:
+                # Whitelist seluruh domain
+                if current_domain == wl['domain'] or current_domain.endswith('.' + wl['domain']):
+                    return True
+            elif wl['type'] == 'url':
+                # Whitelist URL spesifik (exact atau prefix match)
+                if url == wl['url'] or url.startswith(wl['url']):
+                    return True
+            elif wl['type'] == 'keyword_url' and keyword:
+                # Whitelist keyword tertentu di URL tertentu
+                if (url == wl['url'] or url.startswith(wl['url'])) and keyword.lower() == wl['keyword']:
+                    return True
+        return False
+
     
     def detect(self, text: str, context_length: int = 100) -> List[Dict]:
         """

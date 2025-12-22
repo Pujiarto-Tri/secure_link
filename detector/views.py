@@ -15,7 +15,7 @@ from django.contrib import messages
 from django.utils import timezone
 from django.db.models import Count, Q
 
-from .models import Keyword, ScanSession, ScrapedPage, DetectedContent, ScanLog
+from .models import Keyword, ScanSession, ScrapedPage, DetectedContent, ScanLog, Whitelist
 from .scraper import WebScraper
 from .detection import ContentDetector
 
@@ -135,6 +135,10 @@ class RunScanView(View):
             active_keywords = Keyword.objects.filter(is_active=True)
             detector.load_keywords_from_db(active_keywords)
             
+            # Load whitelist untuk filter false positives
+            active_whitelist = Whitelist.objects.filter(is_active=True)
+            detector.load_whitelist_from_db(active_whitelist)
+            
             # Counter untuk total issues (menggunakan list agar bisa dimodifikasi dalam closure)
             total_issues = [0]
             
@@ -204,6 +208,16 @@ class RunScanView(View):
                     )
                     
                     for detection in detections:
+                        # Skip jika URL+keyword di-whitelist
+                        if detector.is_whitelisted(url, detection['keyword']):
+                            ScanLog.objects.create(
+                                scan_session=scan_session,
+                                log_type='info',
+                                message=f'⏭️ Dilewati (whitelist): "{detection["keyword"]}" di {url[:50]}',
+                                url=url
+                            )
+                            continue
+                        
                         keyword_obj = Keyword.objects.filter(
                             keyword__iexact=detection['keyword'],
                             is_active=True
@@ -603,3 +617,178 @@ class SeedKeywordsView(View):
         
         messages.success(request, f'Berhasil menambahkan {created_count} kata kunci baru')
         return redirect('detector:keyword_list')
+
+
+class WhitelistListView(ListView):
+    """Daftar whitelist"""
+    model = Whitelist
+    template_name = 'detector/whitelist_list.html'
+    context_object_name = 'whitelist_items'
+    paginate_by = 50
+    
+    def get_queryset(self):
+        queryset = Whitelist.objects.all().order_by('-created_at')
+        whitelist_type = self.request.GET.get('type')
+        if whitelist_type:
+            queryset = queryset.filter(whitelist_type=whitelist_type)
+        return queryset
+    
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['type_choices'] = Whitelist.TYPE_CHOICES
+        context['current_type'] = self.request.GET.get('type', '')
+        return context
+
+
+class WhitelistAddView(View):
+    """Tambah whitelist baru"""
+    
+    def post(self, request):
+        # Check if AJAX request (from run_scan.html)
+        is_ajax = request.headers.get('Content-Type') == 'application/json'
+        
+        if is_ajax:
+            try:
+                data = json.loads(request.body)
+                url = data.get('url', '').strip()
+                keyword = data.get('keyword', '').strip()
+                whitelist_type = data.get('whitelist_type', 'keyword_url')
+                reason = data.get('reason', '')
+            except json.JSONDecodeError:
+                return JsonResponse({'success': False, 'error': 'Invalid JSON'}, status=400)
+        else:
+            url = request.POST.get('url', '').strip()
+            keyword = request.POST.get('keyword', '').strip()
+            whitelist_type = request.POST.get('whitelist_type', 'url')
+            reason = request.POST.get('reason', '').strip()
+        
+        if not url:
+            if is_ajax:
+                return JsonResponse({'success': False, 'error': 'URL harus diisi'}, status=400)
+            messages.error(request, 'URL harus diisi')
+            return redirect('detector:whitelist_list')
+        
+        # Validasi URL
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        # Cek duplikat
+        existing = Whitelist.objects.filter(url=url)
+        if keyword and whitelist_type == 'keyword_url':
+            existing = existing.filter(keyword__iexact=keyword)
+        
+        if existing.exists():
+            if is_ajax:
+                return JsonResponse({'success': False, 'error': 'URL sudah ada di whitelist'}, status=400)
+            messages.warning(request, 'URL sudah ada di whitelist')
+            return redirect('detector:whitelist_list')
+        
+        # Buat whitelist baru
+        whitelist = Whitelist.objects.create(
+            url=url,
+            keyword=keyword if whitelist_type == 'keyword_url' else '',
+            whitelist_type=whitelist_type,
+            reason=reason,
+            is_active=True
+        )
+        
+        if is_ajax:
+            return JsonResponse({
+                'success': True,
+                'message': 'URL berhasil ditambahkan ke whitelist',
+                'whitelist_id': whitelist.pk
+            })
+        
+        messages.success(request, 'URL berhasil ditambahkan ke whitelist')
+        return redirect('detector:whitelist_list')
+
+
+class WhitelistEditView(View):
+    """Edit whitelist"""
+    
+    def get(self, request, pk):
+        whitelist = get_object_or_404(Whitelist, pk=pk)
+        return JsonResponse({
+            'id': whitelist.pk,
+            'url': whitelist.url,
+            'domain': whitelist.domain,
+            'keyword': whitelist.keyword,
+            'whitelist_type': whitelist.whitelist_type,
+            'reason': whitelist.reason,
+            'is_active': whitelist.is_active
+        })
+    
+    def post(self, request, pk):
+        whitelist = get_object_or_404(Whitelist, pk=pk)
+        
+        # Check if AJAX request
+        is_ajax = request.headers.get('Content-Type') == 'application/json'
+        
+        if is_ajax:
+            try:
+                data = json.loads(request.body)
+            except json.JSONDecodeError:
+                return JsonResponse({'success': False, 'error': 'Invalid JSON'}, status=400)
+        else:
+            data = request.POST
+        
+        url = data.get('url', '').strip()
+        if url:
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
+            whitelist.url = url
+        
+        whitelist.keyword = data.get('keyword', '').strip()
+        whitelist.whitelist_type = data.get('whitelist_type', whitelist.whitelist_type)
+        whitelist.reason = data.get('reason', '').strip()
+        
+        if 'is_active' in data:
+            whitelist.is_active = data.get('is_active') in [True, 'true', 'on', '1', 1]
+        
+        whitelist.save()
+        
+        if is_ajax:
+            return JsonResponse({'success': True, 'message': 'Whitelist berhasil diperbarui'})
+        
+        messages.success(request, 'Whitelist berhasil diperbarui')
+        return redirect('detector:whitelist_list')
+
+
+class WhitelistDeleteView(View):
+    """Hapus whitelist"""
+    
+    def post(self, request, pk):
+        whitelist = get_object_or_404(Whitelist, pk=pk)
+        
+        # Check if AJAX request
+        is_ajax = request.headers.get('Content-Type') == 'application/json' or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+        
+        whitelist.delete()
+        
+        if is_ajax:
+            return JsonResponse({'success': True, 'message': 'Whitelist berhasil dihapus'})
+        
+        messages.success(request, 'Whitelist berhasil dihapus')
+        return redirect('detector:whitelist_list')
+
+
+class WhitelistToggleView(View):
+    """Toggle status aktif whitelist"""
+    
+    def post(self, request, pk):
+        whitelist = get_object_or_404(Whitelist, pk=pk)
+        whitelist.is_active = not whitelist.is_active
+        whitelist.save(update_fields=['is_active', 'updated_at'])
+        
+        is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+        
+        if is_ajax:
+            return JsonResponse({
+                'success': True,
+                'is_active': whitelist.is_active,
+                'message': f'Whitelist {"diaktifkan" if whitelist.is_active else "dinonaktifkan"}'
+            })
+        
+        messages.success(request, f'Whitelist berhasil {"diaktifkan" if whitelist.is_active else "dinonaktifkan"}')
+        return redirect('detector:whitelist_list')
+

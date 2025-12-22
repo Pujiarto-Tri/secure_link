@@ -61,6 +61,12 @@
                 </a>
             </li>
             <li class="nav-item">
+                <a href="{% url 'detector:whitelist_list' %}" class="nav-link {% if 'whitelist' in request.resolver_match.url_name %}active{% endif %}">
+                    <i class="bi bi-shield-check"></i>
+                    <span>Whitelist</span>
+                </a>
+            </li>
+            <li class="nav-item">
                 <a href="{% url 'detector:export_csv' %}" class="nav-link">
                     <i class="bi bi-download"></i>
                     <span>Export Data</span>

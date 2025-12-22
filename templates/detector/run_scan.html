@@ -121,10 +121,10 @@
                     <table class="table table-sm mb-0">
                         <thead>
                             <tr>
-                                <th style="width: 40%">URL</th>
-                                <th style="width: 25%">Keyword</th>
-                                <th style="width: 20%">Kategori</th>
-                                <th style="width: 15%">Aksi</th>
+                                <th style="width: 35%">URL</th>
+                                <th style="width: 20%">Keyword</th>
+                                <th style="width: 15%">Kategori</th>
+                                <th style="width: 30%">Aksi</th>
                             </tr>
                         </thead>
                         <tbody id="detectedList">
@@ -133,6 +133,18 @@
                 </div>
             </div>
         </div>
+    </div>
+</div>
+
+<!-- Toast for whitelist notification -->
+<div class="toast-container position-fixed bottom-0 end-0 p-3">
+    <div id="whitelistToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+        <div class="toast-header">
+            <i class="bi bi-shield-check me-2 text-success"></i>
+            <strong class="me-auto">Whitelist</strong>
+            <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+        <div class="toast-body" id="toastMessage"></div>
     </div>
 </div>
 {% endblock %}
@@ -194,6 +206,122 @@ document.addEventListener('DOMContentLoaded', function() {
     const maxPages = {{ scan.max_pages }};
     let lastLogId = 0;
     let isComplete = false;
+    
+    // Helper function to escape HTML
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    
+    // Toast notification function
+    function showToast(message, type) {
+        const toastEl = document.getElementById('whitelistToast');
+        if (!toastEl) {
+            console.log('Toast:', message);
+            return;
+        }
+        const toastBody = document.getElementById('toastMessage');
+        const toastIcon = toastEl.querySelector('.toast-header i');
+        
+        toastBody.textContent = message;
+        
+        if (type === 'error') {
+            toastIcon.className = 'bi bi-x-circle me-2 text-danger';
+        } else {
+            toastIcon.className = 'bi bi-shield-check me-2 text-success';
+        }
+        
+        const toast = new bootstrap.Toast(toastEl);
+        toast.show();
+    }
+    
+    // Whitelist function - must be defined before buttons are created
+    function addToWhitelist(url, keyword, btn) {
+        console.log('=== addToWhitelist called ===');
+        console.log('URL:', url);
+        console.log('Keyword:', keyword);
+        
+        // Skip confirm for now - just proceed directly
+        console.log('Proceeding to disable button...');
+        
+        // Disable button while processing
+        btn.disabled = true;
+        btn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+        
+        console.log('Sending fetch request to /whitelist/add/');
+        fetch('/whitelist/add/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': '{{ csrf_token }}'
+            },
+            body: JSON.stringify({
+                url: url,
+                keyword: keyword,
+                whitelist_type: 'keyword_url',
+                reason: 'Ditambahkan dari halaman scan'
+            })
+        })
+        .then(response => {
+            console.log('Response status:', response.status);
+            return response.json();
+        })
+        .then(data => {
+            console.log('Response data:', data);
+            if (data.success) {
+                // Show success state
+                btn.classList.remove('btn-outline-success');
+                btn.classList.add('btn-success');
+                btn.innerHTML = '<i class="bi bi-check-lg"></i>';
+                btn.title = 'Sudah di-whitelist';
+                
+                // Show toast
+                showToast(data.message || 'Berhasil ditambahkan ke whitelist', 'success');
+            } else {
+                // Reset button
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-shield-check"></i>';
+                showToast(data.error || 'Gagal menambahkan ke whitelist', 'error');
+            }
+        })
+        .catch(error => {
+            console.error('Fetch error:', error);
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-shield-check"></i>';
+            showToast('Terjadi kesalahan', 'error');
+        });
+    }
+    
+    // Make addToWhitelist available globally for dynamic buttons
+    window.addToWhitelist = addToWhitelist;
+    
+    // Event delegation for whitelist buttons - more reliable for dynamic elements
+    const detectedList = document.getElementById('detectedList');
+    console.log('Setting up click listener on detectedList:', detectedList);
+    
+    detectedList.addEventListener('click', function(e) {
+        console.log('Click detected on:', e.target);
+        console.log('Target tagName:', e.target.tagName);
+        console.log('Target classes:', e.target.className);
+        
+        // Find the button element (might be the icon inside)
+        let btn = e.target;
+        // If clicked on icon, get parent button
+        if (btn.tagName === 'I') {
+            btn = btn.parentElement;
+        }
+        
+        console.log('Button found:', btn);
+        console.log('Button dataset:', btn.dataset);
+        
+        if (btn && btn.classList.contains('btn-outline-success') && btn.dataset.url) {
+            console.log('Calling addToWhitelist with:', btn.dataset.url, btn.dataset.keyword);
+            e.preventDefault();
+            e.stopPropagation();
+            addToWhitelist(btn.dataset.url, btn.dataset.keyword, btn);
+        }
+    });
     
     // Start the scan via AJAX
     fetch(`/scan/${scanId}/run/`, {
@@ -284,18 +412,47 @@ document.addEventListener('DOMContentLoaded', function() {
                 data.detections.forEach(det => {
                     const row = document.createElement('tr');
                     row.className = 'detection-row';
-                    row.innerHTML = `
-                        <td class="text-truncate" style="max-width: 200px;" title="${det.url}">
-                            ${det.url.replace(/^https?:\/\//, '').substring(0, 40)}...
-                        </td>
-                        <td><span class="badge badge-danger">${det.keyword}</span></td>
-                        <td><span class="badge badge-warning">${det.category}</span></td>
-                        <td>
-                            <a href="${det.url}" target="_blank" class="btn btn-sm btn-primary">
-                                <i class="bi bi-box-arrow-up-right"></i> Buka
-                            </a>
-                        </td>
-                    `;
+                    row.id = `detection-row-${det.id}`;
+                    
+                    // Create cells
+                    const urlCell = document.createElement('td');
+                    urlCell.className = 'text-truncate';
+                    urlCell.style.maxWidth = '200px';
+                    urlCell.title = det.url;
+                    urlCell.textContent = det.url.replace(/^https?:\/\//, '').substring(0, 40) + '...';
+                    
+                    const keywordCell = document.createElement('td');
+                    keywordCell.innerHTML = `<span class="badge badge-danger">${escapeHtml(det.keyword)}</span>`;
+                    
+                    const categoryCell = document.createElement('td');
+                    categoryCell.innerHTML = `<span class="badge badge-warning">${escapeHtml(det.category)}</span>`;
+                    
+                    const actionCell = document.createElement('td');
+                    
+                    // Open link button
+                    const openBtn = document.createElement('a');
+                    openBtn.href = det.url;
+                    openBtn.target = '_blank';
+                    openBtn.className = 'btn btn-sm btn-primary';
+                    openBtn.innerHTML = '<i class="bi bi-box-arrow-up-right"></i>';
+                    
+                    // Whitelist button
+                    const whitelistBtn = document.createElement('button');
+                    whitelistBtn.className = 'btn btn-sm btn-outline-success ms-1';
+                    whitelistBtn.title = 'Tambahkan ke Whitelist';
+                    whitelistBtn.innerHTML = '<i class="bi bi-shield-check"></i>';
+                    whitelistBtn.dataset.url = det.url;
+                    whitelistBtn.dataset.keyword = det.keyword;
+                    // Click handled by event delegation on #detectedList
+                    
+                    actionCell.appendChild(openBtn);
+                    actionCell.appendChild(whitelistBtn);
+                    
+                    row.appendChild(urlCell);
+                    row.appendChild(keywordCell);
+                    row.appendChild(categoryCell);
+                    row.appendChild(actionCell);
+                    
                     detectedList.appendChild(row);
                     lastDetectionId = det.id;
                 });

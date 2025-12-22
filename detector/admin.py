@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Keyword, ScanSession, ScrapedPage, DetectedContent
+from .models import Keyword, ScanSession, ScrapedPage, DetectedContent, Whitelist
 
 
 @admin.register(Keyword)
@@ -40,3 +40,13 @@ class DetectedContentAdmin(admin.ModelAdmin):
     
     def get_queryset(self, request):
         return super().get_queryset(request).select_related('page', 'keyword')
+
+
+@admin.register(Whitelist)
+class WhitelistAdmin(admin.ModelAdmin):
+    list_display = ['url', 'domain', 'keyword', 'whitelist_type', 'is_active', 'created_at']
+    list_filter = ['whitelist_type', 'is_active']
+    search_fields = ['url', 'domain', 'keyword', 'reason']
+    list_editable = ['is_active']
+    ordering = ['-created_at']
+

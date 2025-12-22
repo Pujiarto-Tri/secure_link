@@ -28,4 +28,12 @@ urlpatterns = [
     # Keywords
     path('keywords/', views.KeywordListView.as_view(), name='keyword_list'),
     path('keywords/seed/', views.SeedKeywordsView.as_view(), name='seed_keywords'),
+    
+    # Whitelist
+    path('whitelist/', views.WhitelistListView.as_view(), name='whitelist_list'),
+    path('whitelist/add/', views.WhitelistAddView.as_view(), name='whitelist_add'),
+    path('whitelist/<int:pk>/edit/', views.WhitelistEditView.as_view(), name='whitelist_edit'),
+    path('whitelist/<int:pk>/delete/', views.WhitelistDeleteView.as_view(), name='whitelist_delete'),
+    path('whitelist/<int:pk>/toggle/', views.WhitelistToggleView.as_view(), name='whitelist_toggle'),
 ]
+

@@ -1,0 +1,328 @@
+{% extends 'base.html' %}
+
+{% block title %}Whitelist{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Whitelist URL</h1>
+        <p class="page-subtitle">Kelola daftar URL yang dikecualikan dari deteksi</p>
+    </div>
+    <div>
+        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addWhitelistModal">
+            <i class="bi bi-plus-lg me-2"></i> Tambah Whitelist
+        </button>
+    </div>
+</div>
+
+<!-- Filter by Type -->
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="get" class="d-flex gap-3 align-items-end">
+            <div style="min-width: 250px;">
+                <label class="form-label">Filter Tipe</label>
+                <select name="type" class="form-select" onchange="this.form.submit()">
+                    <option value="">-- Semua Tipe --</option>
+                    {% for value, label in type_choices %}
+                    <option value="{{ value }}" {% if current_type == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        {% if whitelist_items %}
+        <div class="table-responsive">
+            <table class="table mb-0">
+                <thead>
+                    <tr>
+                        <th>URL</th>
+                        <th>Domain</th>
+                        <th>Keyword</th>
+                        <th>Tipe</th>
+                        <th>Alasan</th>
+                        <th>Status</th>
+                        <th>Dibuat</th>
+                        <th>Aksi</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in whitelist_items %}
+                    <tr id="row-{{ item.pk }}">
+                        <td>
+                            <span class="text-truncate d-inline-block" style="max-width: 200px;" title="{{ item.url }}">
+                                {{ item.url|truncatechars:40 }}
+                            </span>
+                        </td>
+                        <td>{{ item.domain }}</td>
+                        <td>
+                            {% if item.keyword %}
+                            <span class="badge badge-info">{{ item.keyword }}</span>
+                            {% else %}
+                            <span class="text-secondary">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span class="badge badge-{% if item.whitelist_type == 'domain' %}warning{% elif item.whitelist_type == 'keyword_url' %}info{% else %}secondary{% endif %}">
+                                {{ item.get_whitelist_type_display }}
+                            </span>
+                        </td>
+                        <td>
+                            <span class="text-truncate d-inline-block" style="max-width: 150px;" title="{{ item.reason }}">
+                                {{ item.reason|truncatechars:30|default:"-" }}
+                            </span>
+                        </td>
+                        <td>
+                            {% if item.is_active %}
+                            <span class="badge badge-success">Aktif</span>
+                            {% else %}
+                            <span class="badge badge-danger">Nonaktif</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-secondary">{{ item.created_at|date:"d M Y" }}</td>
+                        <td>
+                            <div class="btn-group btn-group-sm">
+                                <button type="button" class="btn btn-outline-primary" onclick="editWhitelist({{ item.pk }})" title="Edit">
+                                    <i class="bi bi-pencil"></i>
+                                </button>
+                                <form method="post" action="{% url 'detector:whitelist_toggle' item.pk %}" class="d-inline">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-outline-{% if item.is_active %}warning{% else %}success{% endif %}" title="{% if item.is_active %}Nonaktifkan{% else %}Aktifkan{% endif %}">
+                                        <i class="bi bi-{% if item.is_active %}pause{% else %}play{% endif %}"></i>
+                                    </button>
+                                </form>
+                                <button type="button" class="btn btn-outline-danger" onclick="deleteWhitelist({{ item.pk }}, '{{ item.url|escapejs }}')" title="Hapus">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        
+        {% if is_paginated %}
+        <div class="p-4">
+            <nav>
+                <ul class="pagination justify-content-center mb-0">
+                    {% if page_obj.has_previous %}
+                    <li class="page-item">
+                        <a class="page-link" href="?page={{ page_obj.previous_page_number }}{% if current_type %}&type={{ current_type }}{% endif %}">Previous</a>
+                    </li>
+                    {% endif %}
+                    
+                    <li class="page-item active">
+                        <span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span>
+                    </li>
+                    
+                    {% if page_obj.has_next %}
+                    <li class="page-item">
+                        <a class="page-link" href="?page={{ page_obj.next_page_number }}{% if current_type %}&type={{ current_type }}{% endif %}">Next</a>
+                    </li>
+                    {% endif %}
+                </ul>
+            </nav>
+        </div>
+        {% endif %}
+        
+        {% else %}
+        <div class="empty-state">
+            <i class="bi bi-shield-check"></i>
+            <h4>Belum ada whitelist</h4>
+            <p>Tambahkan URL ke whitelist untuk mengecualikannya dari deteksi konten negatif.</p>
+            
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Add Whitelist Modal -->
+<div class="modal fade" id="addWhitelistModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="post" action="{% url 'detector:whitelist_add' %}">
+                {% csrf_token %}
+                <div class="modal-header">
+                    <h5 class="modal-title">Tambah Whitelist</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">URL <span class="text-danger">*</span></label>
+                        <input type="url" name="url" class="form-control" placeholder="https://example.com/artikel/berita" required>
+                        <div class="form-text">URL yang ingin dikecualikan dari deteksi</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Tipe Whitelist</label>
+                        <select name="whitelist_type" class="form-select" id="addWhitelistType" onchange="toggleKeywordField()">
+                            <option value="url">URL Spesifik</option>
+                            <option value="domain">Domain</option>
+                            <option value="keyword_url">Keyword + URL</option>
+                        </select>
+                    </div>
+                    <div class="mb-3" id="keywordFieldContainer" style="display: none;">
+                        <label class="form-label">Keyword</label>
+                        <input type="text" name="keyword" class="form-control" placeholder="slot">
+                        <div class="form-text">Keyword spesifik yang di-whitelist untuk URL ini</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Alasan</label>
+                        <textarea name="reason" class="form-control" rows="2" placeholder="Contoh: Berita resmi dari Diskominfo tentang bahaya judi online"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-plus-lg me-2"></i> Tambah
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Whitelist Modal -->
+<div class="modal fade" id="editWhitelistModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="post" id="editWhitelistForm">
+                {% csrf_token %}
+                <div class="modal-header">
+                    <h5 class="modal-title">Edit Whitelist</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">URL <span class="text-danger">*</span></label>
+                        <input type="url" name="url" id="editUrl" class="form-control" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Tipe Whitelist</label>
+                        <select name="whitelist_type" id="editWhitelistType" class="form-select" onchange="toggleEditKeywordField()">
+                            <option value="url">URL Spesifik</option>
+                            <option value="domain">Domain</option>
+                            <option value="keyword_url">Keyword + URL</option>
+                        </select>
+                    </div>
+                    <div class="mb-3" id="editKeywordFieldContainer">
+                        <label class="form-label">Keyword</label>
+                        <input type="text" name="keyword" id="editKeyword" class="form-control">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Alasan</label>
+                        <textarea name="reason" id="editReason" class="form-control" rows="2"></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="is_active" id="editIsActive" value="on">
+                            <label class="form-check-label" for="editIsActive">Aktif</label>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-check-lg me-2"></i> Simpan
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteWhitelistModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="post" id="deleteWhitelistForm">
+                {% csrf_token %}
+                <div class="modal-header">
+                    <h5 class="modal-title">Hapus Whitelist</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Apakah Anda yakin ingin menghapus whitelist ini?</p>
+                    <p class="text-danger fw-bold" id="deleteWhitelistUrl"></p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
+                    <button type="submit" class="btn btn-danger">
+                        <i class="bi bi-trash me-2"></i> Hapus
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Toast for notifications -->
+<div class="toast-container position-fixed bottom-0 end-0 p-3">
+    <div id="whitelistToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+        <div class="toast-header">
+            <i class="bi bi-shield-check me-2 text-success"></i>
+            <strong class="me-auto">Whitelist</strong>
+            <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+        <div class="toast-body" id="toastMessage"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function toggleKeywordField() {
+    const type = document.getElementById('addWhitelistType').value;
+    const container = document.getElementById('keywordFieldContainer');
+    container.style.display = type === 'keyword_url' ? 'block' : 'none';
+}
+
+function toggleEditKeywordField() {
+    const type = document.getElementById('editWhitelistType').value;
+    const container = document.getElementById('editKeywordFieldContainer');
+    container.style.display = type === 'keyword_url' ? 'block' : 'none';
+}
+
+function editWhitelist(id) {
+    fetch(`/whitelist/${id}/edit/`)
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('editUrl').value = data.url;
+            document.getElementById('editWhitelistType').value = data.whitelist_type;
+            document.getElementById('editKeyword').value = data.keyword || '';
+            document.getElementById('editReason').value = data.reason || '';
+            document.getElementById('editIsActive').checked = data.is_active;
+            document.getElementById('editWhitelistForm').action = `/whitelist/${id}/edit/`;
+            
+            toggleEditKeywordField();
+            
+            const modal = new bootstrap.Modal(document.getElementById('editWhitelistModal'));
+            modal.show();
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Gagal memuat data whitelist');
+        });
+}
+
+function deleteWhitelist(id, url) {
+    document.getElementById('deleteWhitelistUrl').textContent = url;
+    document.getElementById('deleteWhitelistForm').action = `/whitelist/${id}/delete/`;
+    
+    const modal = new bootstrap.Modal(document.getElementById('deleteWhitelistModal'));
+    modal.show();
+}
+
+function showToast(message, type = 'success') {
+    const toastEl = document.getElementById('whitelistToast');
+    const toastBody = document.getElementById('toastMessage');
+    toastBody.textContent = message;
+    
+    const toast = new bootstrap.Toast(toastEl);
+    toast.show();
+}
+</script>
+{% endblock %}
