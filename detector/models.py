@@ -140,6 +140,12 @@ class DetectedContent(models.Model):
     category = models.CharField(max_length=50, verbose_name='Kategori')
     severity = models.CharField(max_length=20, default='medium', verbose_name='Tingkat Keparahan')
     location = models.CharField(max_length=50, default='content', verbose_name='Lokasi')  # title, meta, content
+    
+    # Confidence scoring untuk mengurangi false positive
+    confidence_score = models.FloatField(default=1.0, verbose_name='Skor Kepercayaan')
+    is_false_positive = models.BooleanField(default=False, verbose_name='False Positive')
+    safe_context_found = models.TextField(blank=True, verbose_name='Konteks Aman Ditemukan')
+    
     is_reported = models.BooleanField(default=False, verbose_name='Sudah Dilaporkan')
     is_resolved = models.BooleanField(default=False, verbose_name='Sudah Ditangani')
     notes = models.TextField(blank=True, verbose_name='Catatan')

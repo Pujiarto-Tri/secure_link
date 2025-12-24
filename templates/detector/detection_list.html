@@ -17,26 +17,27 @@
 <div class="card mb-4">
     <div class="card-body">
         <form method="get" class="row g-3 align-items-end">
-            <div class="col-md-3">
+            <div class="col-md-2">
                 <label class="form-label">Kategori</label>
                 <select name="category" class="form-select">
-                    <option value="">-- Semua Kategori --</option>
+                    <option value="">-- Semua --</option>
                     {% for value, label in categories %}
                     <option value="{{ value }}" {% if value == current_category %}selected{% endif %}>{{ label }}</option>
                     {% endfor %}
                 </select>
             </div>
-            <div class="col-md-3">
+            <div class="col-md-2">
                 <label class="form-label">Status</label>
                 <select name="status" class="form-select">
-                    <option value="">-- Semua Status --</option>
+                    <option value="">-- Semua --</option>
                     <option value="unresolved" {% if current_status == 'unresolved' %}selected{% endif %}>Belum Ditangani</option>
                     <option value="reported" {% if current_status == 'reported' %}selected{% endif %}>Sudah Dilaporkan</option>
                     <option value="resolved" {% if current_status == 'resolved' %}selected{% endif %}>Sudah Ditangani</option>
+                    <option value="false_positive" {% if current_status == 'false_positive' %}selected{% endif %}>False Positive</option>
                 </select>
             </div>
-            <div class="col-md-3">
-                <label class="form-label">Tingkat Keparahan</label>
+            <div class="col-md-2">
+                <label class="form-label">Tingkat</label>
                 <select name="severity" class="form-select">
                     <option value="">-- Semua --</option>
                     <option value="high" {% if current_severity == 'high' %}selected{% endif %}>Tinggi</option>
@@ -44,9 +45,26 @@
                     <option value="low" {% if current_severity == 'low' %}selected{% endif %}>Rendah</option>
                 </select>
             </div>
-            <div class="col-md-3">
+            <div class="col-md-2">
+                <label class="form-label">Confidence</label>
+                <select name="confidence" class="form-select">
+                    <option value="">-- Semua --</option>
+                    <option value="high" {% if current_confidence == 'high' %}selected{% endif %}>🔴 Tinggi (≥0.8)</option>
+                    <option value="medium" {% if current_confidence == 'medium' %}selected{% endif %}>🟡 Sedang (0.5-0.8)</option>
+                    <option value="low" {% if current_confidence == 'low' %}selected{% endif %}>🟢 Rendah (&lt;0.5)</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Urutkan</label>
+                <select name="sort" class="form-select">
+                    <option value="">Terbaru</option>
+                    <option value="confidence_desc" {% if current_sort == 'confidence_desc' %}selected{% endif %}>Confidence ↓</option>
+                    <option value="confidence_asc" {% if current_sort == 'confidence_asc' %}selected{% endif %}>Confidence ↑</option>
+                </select>
+            </div>
+            <div class="col-md-2">
                 <button type="submit" class="btn btn-primary w-100">
-                    <i class="bi bi-filter me-2"></i> Filter
+                    <i class="bi bi-filter me-2"></i>Filter
                 </button>
             </div>
         </form>
@@ -64,6 +82,7 @@
                     <option value="">-- Aksi Bulk --</option>
                     <option value="mark_reported">Tandai Dilaporkan</option>
                     <option value="mark_resolved">Tandai Ditangani</option>
+                    <option value="mark_false_positive">Tandai False Positive</option>
                 </select>
                 <button type="submit" class="btn btn-sm btn-secondary">Terapkan</button>
             </div>
@@ -77,7 +96,7 @@
                             <th><input type="checkbox" id="selectAll" class="form-check-input"></th>
                             <th>Kata Kunci</th>
                             <th>Kategori</th>
-                            <th>Tingkat</th>
+                            <th>Confidence</th>
                             <th>Lokasi</th>
                             <th>URL</th>
                             <th>Status</th>
@@ -93,7 +112,24 @@
                             </td>
                             <td><span class="text-danger fw-bold">{{ detection.matched_text }}</span></td>
                             <td><span class="badge badge-{{ detection.category }}">{{ detection.category }}</span></td>
-                            <td><span class="badge badge-{{ detection.severity }}">{{ detection.severity }}</span></td>
+                            <td>
+                                {% if detection.confidence_score >= 0.8 %}
+                                <span class="badge bg-danger" title="Kemungkinan besar konten negatif asli">
+                                    🔴 {{ detection.confidence_score }}
+                                </span>
+                                {% elif detection.confidence_score >= 0.5 %}
+                                <span class="badge bg-warning text-dark" title="Perlu direview manual">
+                                    🟡 {{ detection.confidence_score }}
+                                </span>
+                                {% else %}
+                                <span class="badge bg-success" title="Kemungkinan false positive{% if detection.safe_context_found %} - Konteks: {{ detection.safe_context_found }}{% endif %}">
+                                    🟢 {{ detection.confidence_score }}
+                                </span>
+                                {% endif %}
+                                {% if detection.is_false_positive %}
+                                <span class="badge bg-secondary ms-1" title="Ditandai false positive">FP</span>
+                                {% endif %}
+                            </td>
                             <td>{{ detection.location }}</td>
                             <td>
                                 <a href="{{ detection.page.url }}" target="_blank" class="text-secondary">

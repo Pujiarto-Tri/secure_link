@@ -53,6 +53,39 @@ class ContentDetector:
         ],
     }
     
+    # Kata kunci konteks aman - menandakan konten positif/edukatif
+    # Jika ditemukan bersama keyword negatif, confidence score akan diturunkan
+    SAFE_CONTEXT_KEYWORDS = {
+        'obat_aborsi': [
+            'penyuluhan', 'edukasi', 'kesehatan', 'puskesmas', 'dokter', 'rumah sakit',
+            'bidan', 'klinik', 'medis', 'kedokteran', 'kebidanan', 'ibu hamil',
+            'kehamilan sehat', 'kandungan', 'persalinan', 'prenatal', 'postnatal',
+            'kesehatan ibu', 'kesehatan reproduksi', 'pelayanan kesehatan', 'pkm',
+            'dinas kesehatan', 'dinkes', 'rsud', 'poliklinik', 'posyandu',
+            'artikel kesehatan', 'info kesehatan', 'tips kesehatan', 'konsultasi dokter',
+        ],
+        'konten_dewasa': [
+            'mtq', 'musabaqah', 'quran', 'tilawah', 'agama', 'islami', 'islam',
+            'hafidz', 'hafidzah', 'qori', 'qoriah', 'tadarus', 'pengajian',
+            'masjid', 'musholla', 'pesantren', 'madrasah', 'pondok', 'ustadz',
+            'ceramah', 'dakwah', 'kajian', 'tausiyah', 'majlis taklim',
+            'ramadhan', 'idul fitri', 'idul adha', 'maulid', 'isra miraj',
+            'ntb', 'nusa tenggara', 'lombok', 'mataram', 'kabupaten', 'kecamatan',
+            'pemerintah', 'dinas', 'sekretariat', 'bupati', 'walikota', 'gubernur',
+        ],
+        'obat_penguat': [
+            'kesehatan pria', 'konsultasi dokter', 'urologi', 'andrologi',
+            'rumah sakit', 'klinik resmi', 'farmasi', 'apotik resmi',
+            'artikel kesehatan', 'edukasi kesehatan', 'tips kesehatan',
+        ],
+        'judol': [
+            # Untuk judol biasanya tidak ada safe context - tetap tinggi
+        ],
+        'penipuan': [
+            # Untuk penipuan biasanya tidak ada safe context - tetap tinggi
+        ],
+    }
+    
     def __init__(self, custom_keywords: Dict[str, List[str]] = None):
         """
         Initialize detector with optional custom keywords
@@ -171,7 +204,110 @@ class ContentDetector:
         
         return detections
     
-    def detect_in_sections(self, title: str, meta_description: str, content: str) -> List[Dict]:
+    def find_safe_context(self, text: str, category: str) -> List[str]:
+        """
+        Mencari kata-kata konteks aman dalam teks
+        
+        Args:
+            text: Teks yang akan diperiksa
+            category: Kategori keyword yang terdeteksi
+            
+        Returns:
+            List kata-kata safe context yang ditemukan
+        """
+        found_safe_words = []
+        text_lower = text.lower()
+        
+        safe_keywords = self.SAFE_CONTEXT_KEYWORDS.get(category, [])
+        for safe_word in safe_keywords:
+            if safe_word.lower() in text_lower:
+                found_safe_words.append(safe_word)
+        
+        return found_safe_words
+    
+    def calculate_confidence_score(
+        self, 
+        detections: List[Dict], 
+        full_text: str, 
+        title: str = '', 
+        url: str = ''
+    ) -> Tuple[float, List[str]]:
+        """
+        Menghitung confidence score berdasarkan konteks
+        
+        Args:
+            detections: List hasil deteksi di halaman ini
+            full_text: Seluruh teks halaman (title + meta + content)
+            title: Judul halaman
+            url: URL halaman
+            
+        Returns:
+            Tuple: (confidence_score 0.0-1.0, list safe_context_found)
+        """
+        if not detections:
+            return 0.0, []
+        
+        # Base score dimulai dari 1.0 (paling tinggi)
+        score = 1.0
+        all_safe_context = []
+        
+        # Kumpulkan semua kategori yang terdeteksi
+        categories = set(d['category'] for d in detections)
+        
+        # Cek safe context untuk setiap kategori
+        for category in categories:
+            safe_words = self.find_safe_context(full_text, category)
+            all_safe_context.extend(safe_words)
+        
+        # Faktor 1: Jumlah safe context ditemukan
+        # Lebih banyak safe context = score lebih rendah
+        num_safe = len(set(all_safe_context))  # unique safe words
+        if num_safe > 0:
+            # Setiap safe word mengurangi score 0.1, maksimal 0.5 reduksi
+            reduction = min(num_safe * 0.1, 0.5)
+            score -= reduction
+        
+        # Faktor 2: Rasio keyword negatif vs panjang teks
+        # Jika hanya 1 keyword di teks panjang = kemungkinan false positive
+        num_detections = len(detections)
+        text_length = len(full_text)
+        
+        if text_length > 1000 and num_detections <= 2:
+            # Teks panjang dengan sedikit deteksi = mungkin false positive
+            score -= 0.15
+        
+        # Faktor 3: Lokasi deteksi
+        # Jika TIDAK ada di title/meta (hanya di content) = sedikit lebih rendah
+        locations = set(d.get('location', 'content') for d in detections)
+        if 'title' not in locations and 'meta' not in locations:
+            score -= 0.1
+        
+        # Faktor 4: Kategori tertentu lebih mungkin false positive
+        # obat_aborsi dan konten_dewasa lebih rentan false positive
+        high_fp_categories = {'obat_aborsi', 'konten_dewasa', 'obat_penguat'}
+        if categories.issubset(high_fp_categories) and num_safe > 0:
+            score -= 0.1
+        
+        # Faktor 5: Cek URL untuk domain pemerintah dengan kategori non-judol
+        if url and '.go.id' in url.lower():
+            if 'judol' not in categories and 'penipuan' not in categories:
+                # Domain pemerintah dengan kategori kesehatan = mungkin false positive
+                score -= 0.1
+        
+        # Faktor 6: Cek title untuk kata-kata institusi kesehatan
+        health_institutions = ['puskesmas', 'rsud', 'rumah sakit', 'dinas kesehatan', 'posyandu']
+        title_lower = title.lower()
+        for inst in health_institutions:
+            if inst in title_lower:
+                score -= 0.15
+                break
+        
+        # Pastikan score dalam range 0.0 - 1.0
+        score = max(0.0, min(1.0, score))
+        
+        return round(score, 2), list(set(all_safe_context))
+    
+    def detect_in_sections(self, title: str, meta_description: str, content: str, url: str = '') -> Tuple[List[Dict], float, List[str]]:
         """
         Mendeteksi konten negatif di berbagai bagian halaman
         
@@ -179,9 +315,10 @@ class ContentDetector:
             title: Judul halaman
             meta_description: Meta description halaman
             content: Konten utama halaman
+            url: URL halaman (untuk analisis konteks)
             
         Returns:
-            List of dictionaries berisi informasi deteksi dengan lokasi
+            Tuple: (list deteksi, confidence_score, list safe_context_found)
         """
         all_detections = []
         
@@ -206,7 +343,18 @@ class ContentDetector:
             d['severity'] = 'medium'
             all_detections.append(d)
         
-        return all_detections
+        # Hitung confidence score berdasarkan konteks
+        full_text = f"{title} {meta_description} {content}"
+        confidence_score, safe_context = self.calculate_confidence_score(
+            all_detections, full_text, title, url
+        )
+        
+        # Tambahkan confidence ke setiap deteksi
+        for d in all_detections:
+            d['confidence_score'] = confidence_score
+            d['safe_context_found'] = safe_context
+        
+        return all_detections, confidence_score, safe_context
     
     def get_summary(self, detections: List[Dict]) -> Dict:
         """

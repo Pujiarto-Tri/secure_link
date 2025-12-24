@@ -201,11 +201,15 @@ class RunScanView(View):
                 
                 # DETEKSI konten negatif SEGERA (real-time)
                 if result.get('success'):
-                    detections = detector.detect_in_sections(
+                    url = result.get('url', '')
+                    detections, confidence_score, safe_context = detector.detect_in_sections(
                         title=result.get('title', ''),
                         meta_description=result.get('meta_description', ''),
-                        content=result.get('content', '')
+                        content=result.get('content', ''),
+                        url=url
                     )
+                    
+                    safe_context_str = ', '.join(safe_context) if safe_context else ''
                     
                     for detection in detections:
                         # Skip jika URL+keyword di-whitelist
@@ -230,7 +234,9 @@ class RunScanView(View):
                             context=detection['context'][:1000],
                             category=detection['category'],
                             severity=detection.get('severity', 'medium'),
-                            location=detection.get('location', 'content')
+                            location=detection.get('location', 'content'),
+                            confidence_score=confidence_score,
+                            safe_context_found=safe_context_str
                         )
                         total_issues[0] += 1
                         
@@ -243,10 +249,17 @@ class RunScanView(View):
                             'penipuan': 'Penipuan'
                         }.get(detection['category'], detection['category'])
                         
+                        # Tampilkan confidence level
+                        confidence_label = ''
+                        if confidence_score < 0.5:
+                            confidence_label = ' [⚠️ Mungkin False Positive]'
+                        elif confidence_score < 0.8:
+                            confidence_label = ' [Perlu Review]'
+                        
                         ScanLog.objects.create(
                             scan_session=scan_session,
                             log_type='warning',
-                            message=f'🚨 TERDETEKSI: "{detection["matched_text"][:50]}" [{category_display}]',
+                            message=f'🚨 TERDETEKSI: "{detection["matched_text"][:50]}" [{category_display}]{confidence_label}',
                             url=url
                         )
                 
@@ -364,6 +377,7 @@ class ScanLogsView(View):
             'keyword': det.matched_text[:50],
             'category': category_map.get(det.category, det.category),
             'severity': det.severity,
+            'confidence_score': det.confidence_score,
             'time': det.detected_at.strftime('%H:%M:%S')
         } for det in detections]
         
@@ -458,11 +472,29 @@ class DetectionListView(ListView):
             queryset = queryset.filter(is_resolved=True)
         elif status == 'reported':
             queryset = queryset.filter(is_reported=True)
+        elif status == 'false_positive':
+            queryset = queryset.filter(is_false_positive=True)
         
         # Filter berdasarkan severity
         severity = self.request.GET.get('severity')
         if severity:
             queryset = queryset.filter(severity=severity)
+        
+        # Filter berdasarkan confidence level
+        confidence = self.request.GET.get('confidence')
+        if confidence == 'high':
+            queryset = queryset.filter(confidence_score__gte=0.8)
+        elif confidence == 'medium':
+            queryset = queryset.filter(confidence_score__gte=0.5, confidence_score__lt=0.8)
+        elif confidence == 'low':
+            queryset = queryset.filter(confidence_score__lt=0.5)
+        
+        # Sorting
+        sort = self.request.GET.get('sort')
+        if sort == 'confidence_asc':
+            queryset = queryset.order_by('confidence_score')
+        elif sort == 'confidence_desc':
+            queryset = queryset.order_by('-confidence_score')
         
         return queryset
     
@@ -472,6 +504,8 @@ class DetectionListView(ListView):
         context['current_category'] = self.request.GET.get('category', '')
         context['current_status'] = self.request.GET.get('status', '')
         context['current_severity'] = self.request.GET.get('severity', '')
+        context['current_confidence'] = self.request.GET.get('confidence', '')
+        context['current_sort'] = self.request.GET.get('sort', '')
         return context
 
 
@@ -521,6 +555,9 @@ class BulkActionView(View):
         elif action == 'mark_resolved':
             detections.update(is_resolved=True, resolved_at=timezone.now())
             messages.success(request, f'{len(detection_ids)} item ditandai sebagai sudah ditangani')
+        elif action == 'mark_false_positive':
+            detections.update(is_false_positive=True)
+            messages.success(request, f'{len(detection_ids)} item ditandai sebagai false positive')
         
         return redirect('detector:detection_list')
 

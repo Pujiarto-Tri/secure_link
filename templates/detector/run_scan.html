@@ -296,6 +296,53 @@ document.addEventListener('DOMContentLoaded', function() {
     // Make addToWhitelist available globally for dynamic buttons
     window.addToWhitelist = addToWhitelist;
     
+    // Whitelist URL function (without specific keyword)
+    function addToWhitelistUrl(url, whitelistType, btn) {
+        console.log('=== addToWhitelistUrl called ===');
+        console.log('URL:', url);
+        console.log('Type:', whitelistType);
+        
+        // Disable button while processing
+        btn.disabled = true;
+        btn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+        
+        fetch('/whitelist/add/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': '{{ csrf_token }}'
+            },
+            body: JSON.stringify({
+                url: url,
+                keyword: '',
+                whitelist_type: whitelistType,
+                reason: 'Ditambahkan dari halaman scan (URL)'
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                btn.classList.remove('btn-outline-success');
+                btn.classList.add('btn-success');
+                btn.innerHTML = '<i class="bi bi-check-lg"></i>';
+                btn.title = 'Sudah di-whitelist';
+                showToast(data.message || 'URL berhasil ditambahkan ke whitelist', 'success');
+            } else {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-shield-check"></i>';
+                showToast(data.error || 'Gagal menambahkan ke whitelist', 'error');
+            }
+        })
+        .catch(error => {
+            console.error('Fetch error:', error);
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-shield-check"></i>';
+            showToast('Terjadi kesalahan', 'error');
+        });
+    }
+    
+    window.addToWhitelistUrl = addToWhitelistUrl;
+    
     // Event delegation for whitelist buttons - more reliable for dynamic elements
     const detectedList = document.getElementById('detectedList');
     console.log('Setting up click listener on detectedList:', detectedList);
@@ -316,10 +363,11 @@ document.addEventListener('DOMContentLoaded', function() {
         console.log('Button dataset:', btn.dataset);
         
         if (btn && btn.classList.contains('btn-outline-success') && btn.dataset.url) {
-            console.log('Calling addToWhitelist with:', btn.dataset.url, btn.dataset.keyword);
+            console.log('Calling addToWhitelist with:', btn.dataset.url, btn.dataset.keyword, btn.dataset.whitelistType);
             e.preventDefault();
             e.stopPropagation();
-            addToWhitelist(btn.dataset.url, btn.dataset.keyword, btn);
+            // Use URL whitelist type for entire URL whitelisting
+            addToWhitelistUrl(btn.dataset.url, btn.dataset.whitelistType || 'url', btn);
         }
     });
     
@@ -410,9 +458,26 @@ document.addEventListener('DOMContentLoaded', function() {
                 detectedCard.style.display = 'block';
                 
                 data.detections.forEach(det => {
+                    // Check if URL already exists in the list (prevent duplicates)
+                    const existingRow = detectedList.querySelector(`tr[data-url="${CSS.escape(det.url)}"]`);
+                    
+                    if (existingRow) {
+                        // URL already exists - update keyword count instead of adding new row
+                        const keywordCell = existingRow.querySelector('.keyword-cell');
+                        const currentCount = parseInt(keywordCell.dataset.count || 1);
+                        const newCount = currentCount + 1;
+                        keywordCell.dataset.count = newCount;
+                        keywordCell.innerHTML = `<span class="badge badge-danger">${newCount} keywords</span>`;
+                        
+                        // Update last detection ID but don't add new row
+                        lastDetectionId = det.id;
+                        return; // Skip adding new row
+                    }
+                    
                     const row = document.createElement('tr');
                     row.className = 'detection-row';
                     row.id = `detection-row-${det.id}`;
+                    row.dataset.url = det.url; // Store URL for duplicate checking
                     
                     // Create cells
                     const urlCell = document.createElement('td');
@@ -422,6 +487,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     urlCell.textContent = det.url.replace(/^https?:\/\//, '').substring(0, 40) + '...';
                     
                     const keywordCell = document.createElement('td');
+                    keywordCell.className = 'keyword-cell';
+                    keywordCell.dataset.count = 1;
                     keywordCell.innerHTML = `<span class="badge badge-danger">${escapeHtml(det.keyword)}</span>`;
                     
                     const categoryCell = document.createElement('td');
@@ -436,13 +503,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     openBtn.className = 'btn btn-sm btn-primary';
                     openBtn.innerHTML = '<i class="bi bi-box-arrow-up-right"></i>';
                     
-                    // Whitelist button
+                    // Whitelist button - whitelist entire URL
                     const whitelistBtn = document.createElement('button');
                     whitelistBtn.className = 'btn btn-sm btn-outline-success ms-1';
-                    whitelistBtn.title = 'Tambahkan ke Whitelist';
+                    whitelistBtn.title = 'Whitelist URL ini';
                     whitelistBtn.innerHTML = '<i class="bi bi-shield-check"></i>';
                     whitelistBtn.dataset.url = det.url;
-                    whitelistBtn.dataset.keyword = det.keyword;
+                    whitelistBtn.dataset.keyword = ''; // Empty to whitelist entire URL
+                    whitelistBtn.dataset.whitelistType = 'url'; // Use URL type instead of keyword_url
                     // Click handled by event delegation on #detectedList
                     
                     actionCell.appendChild(openBtn);
@@ -457,8 +525,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     lastDetectionId = det.id;
                 });
                 
-                // Update detection count
-                document.getElementById('detectionCount').textContent = data.issues_found || detectedList.children.length;
+                // Update detection count - show unique URLs count
+                document.getElementById('detectionCount').textContent = detectedList.querySelectorAll('tr').length;
             }
             
             // Continue polling
