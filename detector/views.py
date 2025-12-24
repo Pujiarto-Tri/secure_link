@@ -400,6 +400,50 @@ class ScanListView(ListView):
     ordering = ['-created_at']
 
 
+class RunningScanListView(ListView):
+    """Daftar scan yang sedang berjalan"""
+    model = ScanSession
+    template_name = 'detector/running_scans.html'
+    context_object_name = 'scans'
+    
+    def get_queryset(self):
+        return ScanSession.objects.filter(
+            status__in=['running', 'pending']
+        ).order_by('-created_at')
+
+
+class DeleteScanView(View):
+    """Hapus satu scan session beserta semua data terkait"""
+    
+    def post(self, request, pk):
+        scan = get_object_or_404(ScanSession, pk=pk)
+        target_url = scan.target_url
+        
+        # Hapus scan (cascade akan menghapus pages, detections, logs)
+        scan.delete()
+        
+        messages.success(request, f'Scan "{target_url}" berhasil dihapus')
+        return redirect('detector:scan_list')
+
+
+class ClearScanHistoryView(View):
+    """Hapus semua riwayat scan dan konten terdeteksi"""
+    
+    def post(self, request):
+        # Hitung sebelum hapus
+        scan_count = ScanSession.objects.count()
+        detection_count = DetectedContent.objects.count()
+        
+        # Hapus semua (cascade akan menghapus pages, detections, logs)
+        ScanSession.objects.all().delete()
+        
+        messages.success(
+            request, 
+            f'Berhasil menghapus {scan_count} sesi scan dan {detection_count} konten terdeteksi'
+        )
+        return redirect('detector:scan_list')
+
+
 class ScanDetailView(DetailView):
     """Detail scan session"""
     model = ScanSession

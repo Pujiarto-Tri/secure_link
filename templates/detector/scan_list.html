@@ -8,9 +8,23 @@
         <h1 class="page-title">Riwayat Pemindaian</h1>
         <p class="page-subtitle">Semua sesi pemindaian yang pernah dilakukan</p>
     </div>
-    <a href="{% url 'detector:start_scan' %}" class="btn btn-primary">
-        <i class="bi bi-plus-lg me-2"></i> Scan Baru
-    </a>
+    <div class="d-flex gap-2">
+        {% if scans %}
+        <form method="post" action="{% url 'detector:clear_history' %}" class="d-inline">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-outline-danger" 
+                    onclick="return confirm('⚠️ PERINGATAN: Ini akan menghapus SEMUA riwayat scan dan konten terdeteksi. Lanjutkan?')">
+                <i class="bi bi-trash me-2"></i> Hapus Semua Riwayat
+            </button>
+        </form>
+        {% endif %}
+        <a href="{% url 'detector:running_scans' %}" class="btn btn-info">
+            <i class="bi bi-play-circle me-2"></i> Scan Berjalan
+        </a>
+        <a href="{% url 'detector:start_scan' %}" class="btn btn-primary">
+            <i class="bi bi-plus-lg me-2"></i> Scan Baru
+        </a>
+    </div>
 </div>
 
 <div class="card">
@@ -38,7 +52,16 @@
                                 {{ scan.target_url|truncatechars:50 }}
                             </a>
                         </td>
-                        <td><span class="badge badge-{{ scan.status }}">{{ scan.get_status_display }}</span></td>
+                        <td>
+                            {% if scan.status == 'running' %}
+                            <a href="{% url 'detector:run_scan' scan.pk %}" class="badge bg-primary text-decoration-none">
+                                <span class="spinner-border spinner-border-sm me-1" style="width: 10px; height: 10px;"></span>
+                                Berjalan
+                            </a>
+                            {% else %}
+                            <span class="badge badge-{{ scan.status }}">{{ scan.get_status_display }}</span>
+                            {% endif %}
+                        </td>
                         <td>{{ scan.pages_scanned }}</td>
                         <td>
                             {% if scan.issues_found > 0 %}
@@ -49,15 +72,26 @@
                         </td>
                         <td class="text-secondary">{{ scan.created_at|date:"d M Y H:i" }}</td>
                         <td>
+                            {% if scan.status == 'running' %}
+                            <a href="{% url 'detector:run_scan' scan.pk %}" class="btn btn-sm btn-primary" title="Buka Scan">
+                                <i class="bi bi-box-arrow-up-right"></i>
+                            </a>
+                            <form method="post" action="{% url 'detector:cancel_scan' scan.pk %}" class="d-inline">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-sm btn-warning" title="Batalkan" 
+                                        onclick="return confirm('Batalkan scan ini?')">
+                                    <i class="bi bi-x-circle"></i>
+                                </button>
+                            </form>
+                            {% else %}
                             <a href="{% url 'detector:scan_detail' scan.pk %}" class="btn btn-sm btn-secondary" title="Lihat Detail">
                                 <i class="bi bi-eye"></i>
                             </a>
-                            {% if scan.status == 'running' %}
-                            <form method="post" action="{% url 'detector:cancel_scan' scan.pk %}" class="d-inline">
+                            <form method="post" action="{% url 'detector:delete_scan' scan.pk %}" class="d-inline">
                                 {% csrf_token %}
-                                <button type="submit" class="btn btn-sm btn-danger" title="Tandai Dibatalkan" 
-                                        onclick="return confirm('Tandai scan ini sebagai dibatalkan?')">
-                                    <i class="bi bi-x-circle"></i>
+                                <button type="submit" class="btn btn-sm btn-outline-danger" title="Hapus" 
+                                        onclick="return confirm('Hapus scan ini beserta semua datanya?')">
+                                    <i class="bi bi-trash"></i>
                                 </button>
                             </form>
                             {% endif %}

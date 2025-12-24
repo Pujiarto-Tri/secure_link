@@ -1,0 +1,105 @@
+{% extends 'base.html' %}
+
+{% block title %}Scan Berjalan{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Scan Berjalan</h1>
+        <p class="page-subtitle">Daftar pemindaian yang sedang aktif atau menunggu</p>
+    </div>
+    <a href="{% url 'detector:scan_list' %}" class="btn btn-secondary">
+        <i class="bi bi-arrow-left me-2"></i> Semua Scan
+    </a>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        {% if scans %}
+        <div class="table-responsive">
+            <table class="table mb-0">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>URL Target</th>
+                        <th>Status</th>
+                        <th>Progress</th>
+                        <th>Masalah</th>
+                        <th>Waktu Mulai</th>
+                        <th>Aksi</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for scan in scans %}
+                    <tr>
+                        <td>#{{ scan.pk }}</td>
+                        <td>
+                            <a href="{% url 'detector:run_scan' scan.pk %}" class="table-link fw-bold text-primary">
+                                {{ scan.target_url|truncatechars:50 }}
+                            </a>
+                        </td>
+                        <td>
+                            {% if scan.status == 'running' %}
+                            <span class="badge bg-primary">
+                                <span class="spinner-border spinner-border-sm me-1" style="width: 10px; height: 10px;"></span>
+                                Berjalan
+                            </span>
+                            {% else %}
+                            <span class="badge badge-{{ scan.status }}">{{ scan.get_status_display }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="d-flex align-items-center">
+                                <div class="progress flex-grow-1 me-2" style="height: 6px; width: 80px;">
+                                    <div class="progress-bar" style="width: {{ scan.pages_scanned|default:0 }}%;"></div>
+                                </div>
+                                <small>{{ scan.pages_scanned }}/{{ scan.max_pages }}</small>
+                            </div>
+                        </td>
+                        <td>
+                            {% if scan.issues_found > 0 %}
+                            <span class="text-danger fw-bold">{{ scan.issues_found }}</span>
+                            {% else %}
+                            <span class="text-success">0</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-secondary">{{ scan.started_at|date:"d M Y H:i" }}</td>
+                        <td>
+                            <a href="{% url 'detector:run_scan' scan.pk %}" class="btn btn-sm btn-primary" title="Buka Halaman Scan">
+                                <i class="bi bi-box-arrow-up-right"></i> Buka
+                            </a>
+                            <form method="post" action="{% url 'detector:cancel_scan' scan.pk %}" class="d-inline">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-sm btn-danger" title="Batalkan" 
+                                        onclick="return confirm('Batalkan scan ini?')">
+                                    <i class="bi bi-x-circle"></i>
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <i class="bi bi-check-circle text-success"></i>
+            <h4>Tidak ada scan yang sedang berjalan</h4>
+            <p>Semua pemindaian sudah selesai atau belum ada yang dimulai</p>
+            <a href="{% url 'detector:start_scan' %}" class="btn btn-primary mt-3">
+                <i class="bi bi-radar me-2"></i> Mulai Scan Baru
+            </a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% if scans %}
+<div class="mt-3 text-center">
+    <small class="text-secondary">
+        <i class="bi bi-info-circle me-1"></i>
+        Klik "Buka" untuk melihat progress scan secara real-time
+    </small>
+</div>
+{% endif %}
+{% endblock %}

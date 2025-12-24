@@ -12,8 +12,11 @@ urlpatterns = [
     path('scan/<int:pk>/run/', views.RunScanView.as_view(), name='run_scan'),
     path('scan/<int:pk>/cancel/', views.CancelScanView.as_view(), name='cancel_scan'),
     path('scan/<int:pk>/logs/', views.ScanLogsView.as_view(), name='scan_logs'),
+    path('scan/<int:pk>/delete/', views.DeleteScanView.as_view(), name='delete_scan'),
     path('scan/', views.ScanListView.as_view(), name='scan_list'),
+    path('scan/running/', views.RunningScanListView.as_view(), name='running_scans'),
     path('scan/<int:pk>/', views.ScanDetailView.as_view(), name='scan_detail'),
+    path('scan/clear-history/', views.ClearScanHistoryView.as_view(), name='clear_history'),
     
     # Detections
     path('detections/', views.DetectionListView.as_view(), name='detection_list'),
