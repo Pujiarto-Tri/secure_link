@@ -503,6 +503,30 @@ class DetectionListView(ListView):
     def get_queryset(self):
         queryset = DetectedContent.objects.select_related('page', 'keyword').order_by('-detected_at')
         
+        # Exclude whitelisted items
+        active_whitelists = Whitelist.objects.filter(is_active=True)
+        
+        # 1. URL Whitelist
+        url_whitelist = active_whitelists.filter(whitelist_type='url').values_list('url', flat=True)
+        if url_whitelist:
+            queryset = queryset.exclude(page__url__in=url_whitelist)
+            
+        # 2. Domain Whitelist
+        domain_whitelist = active_whitelists.filter(whitelist_type='domain').values_list('domain', flat=True)
+        if domain_whitelist:
+            queryset = queryset.exclude(page__domain__in=domain_whitelist)
+            
+        # 3. Keyword + URL Whitelist
+        keyword_url_whitelists = active_whitelists.filter(whitelist_type='keyword_url')
+        if keyword_url_whitelists.exists():
+            q_objects = Q()
+            for wl in keyword_url_whitelists:
+                if wl.keyword and wl.url:
+                    q_objects |= Q(matched_text__iexact=wl.keyword, page__url=wl.url)
+            
+            if q_objects:
+                queryset = queryset.exclude(q_objects)
+        
         # Filter berdasarkan kategori
         category = self.request.GET.get('category')
         if category:
