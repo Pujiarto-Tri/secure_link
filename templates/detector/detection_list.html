@@ -282,6 +282,22 @@ document.querySelectorAll('.whitelist-btn').forEach(btn => {
                 
                 // Show toast
                 showToast(data.message || 'Berhasil ditambahkan ke whitelist', 'success');
+
+                // Remove the row from the table with animation
+                const row = button.closest('tr');
+                if (row) {
+                    row.style.transition = 'opacity 0.5s ease';
+                    row.style.opacity = '0';
+                    setTimeout(() => {
+                        row.remove();
+                        
+                        // Check if we need to show empty state (optional but nice)
+                        const remainingRows = document.querySelectorAll('tbody tr');
+                        if (remainingRows.length === 0) {
+                            location.reload(); 
+                        }
+                    }, 500);
+                }
             } else {
                 // Reset button
                 button.disabled = false;
