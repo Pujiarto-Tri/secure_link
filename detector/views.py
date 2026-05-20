@@ -4,6 +4,7 @@ Views for the detector application
 import csv
 import json
 import logging
+import time
 from io import StringIO
 from datetime import timedelta
 
@@ -20,6 +21,12 @@ from .scraper import WebScraper
 from .detection import ContentDetector
 
 logger = logging.getLogger(__name__)
+
+# Throttling constants for the scan progress callback. Writing a ScanLog row
+# and a ScanSession update for every single page is the dominant cost on
+# SQLite, so we sample. Errors and detections are always logged in full.
+PROGRESS_SAVE_INTERVAL_S = 1.0           # at most one progress save per second
+SUCCESS_LOG_EVERY_N_PAGES = 10           # one "Berhasil" log every N pages
 
 
 class DashboardView(TemplateView):
@@ -129,27 +136,38 @@ class RunScanView(View):
             from urllib.parse import urlparse
             parsed = urlparse(scan_session.target_url)
             domain = parsed.netloc
-            
+
             # Inisialisasi detector SEBELUM crawling agar bisa deteksi real-time
             detector = ContentDetector()
-            active_keywords = Keyword.objects.filter(is_active=True)
-            detector.load_keywords_from_db(active_keywords)
-            
+            active_keywords_qs = list(Keyword.objects.filter(is_active=True))
+            detector.load_keywords_from_db(active_keywords_qs)
+
+            # In-memory keyword -> Keyword model lookup so the per-detection
+            # callback doesn't issue a separate SQL query for every match.
+            # On a page with 20 hits this used to be 20 SELECTs; now it's zero.
+            keyword_map = {kw.keyword.lower(): kw for kw in active_keywords_qs}
+
             # Load whitelist untuk filter false positives
             active_whitelist = Whitelist.objects.filter(is_active=True)
             detector.load_whitelist_from_db(active_whitelist)
-            
-            # Counter untuk total issues (menggunakan list agar bisa dimodifikasi dalam closure)
-            total_issues = [0]
-            
-            # Inisialisasi scraper
+
+            # Mutable container so the closure below can update counters
+            # without rebinding.
+            counters = {
+                'total_issues': 0,
+                'last_progress_save': 0.0,
+                'whitelisted_skips': 0,
+            }
+
+            # Inisialisasi scraper. ``max_workers`` is now driven by the
+            # scraper's hardware-aware default (12) instead of being pinned
+            # to 3 here.
             scraper = WebScraper(
                 base_domain=domain,
                 delay=0.2,
                 timeout=30,
                 max_pages=scan_session.max_pages,
                 scan_subdomains=scan_session.scan_subdomains,
-                max_workers=3
             )
             
             # Callback untuk REAL-TIME processing: crawl + detect + save
@@ -163,28 +181,38 @@ class RunScanView(View):
                     )
                     scraper.cancel()
                     return
-                
+
                 url = result.get('url', '')
-                
-                # Log progress
+
+                # Log progress.
+                # Errors are always logged (rare + actionable). Success logs
+                # are throttled to one every N pages plus the first and last
+                # page — enough liveness signal for the live feed without
+                # flooding SQLite with thousands of identical rows.
                 if result.get('success'):
-                    ScanLog.objects.create(
-                        scan_session=scan_session,
-                        log_type='success',
-                        message=f'[{pages_scraped}/{max_pages}] Berhasil: {url[:80]}',
-                        url=url
+                    is_milestone = (
+                        pages_scraped == 1
+                        or pages_scraped == max_pages
+                        or pages_scraped % SUCCESS_LOG_EVERY_N_PAGES == 0
                     )
+                    if is_milestone:
+                        ScanLog.objects.create(
+                            scan_session=scan_session,
+                            log_type='success',
+                            message=f'[{pages_scraped}/{max_pages}] Berhasil: {url[:80]}',
+                            url=url,
+                        )
                 else:
                     error_msg = result.get('error', 'Unknown error')
                     ScanLog.objects.create(
                         scan_session=scan_session,
                         log_type='error',
                         message=f'[{pages_scraped}/{max_pages}] Gagal: {url[:60]} - {error_msg}',
-                        url=url
+                        url=url,
                     )
-                
+
                 # SIMPAN halaman ke database SEGERA
-                page, created = ScrapedPage.objects.get_or_create(
+                page, _created = ScrapedPage.objects.get_or_create(
                     scan_session=scan_session,
                     url=result['url'],
                     defaults={
@@ -195,38 +223,33 @@ class RunScanView(View):
                         'http_status': result.get('http_status'),
                         'status': 'scraped' if result.get('success') else 'failed',
                         'error_message': result.get('error') or '',
-                        'scraped_at': timezone.now()
-                    }
+                        'scraped_at': timezone.now(),
+                    },
                 )
-                
+
                 # DETEKSI konten negatif SEGERA (real-time)
                 if result.get('success'):
-                    url = result.get('url', '')
                     detections, confidence_score, safe_context = detector.detect_in_sections(
                         title=result.get('title', ''),
                         meta_description=result.get('meta_description', ''),
                         content=result.get('content', ''),
-                        url=url
+                        url=url,
                     )
-                    
+
                     safe_context_str = ', '.join(safe_context) if safe_context else ''
-                    
+
                     for detection in detections:
-                        # Skip jika URL+keyword di-whitelist
+                        # Skip jika URL+keyword di-whitelist (tidak di-log per
+                        # item supaya tidak menggandakan trafik DB; jumlah
+                        # totalnya dilaporkan di akhir scan)
                         if detector.is_whitelisted(url, detection['keyword']):
-                            ScanLog.objects.create(
-                                scan_session=scan_session,
-                                log_type='info',
-                                message=f'⏭️ Dilewati (whitelist): "{detection["keyword"]}" di {url[:50]}',
-                                url=url
-                            )
+                            counters['whitelisted_skips'] += 1
                             continue
-                        
-                        keyword_obj = Keyword.objects.filter(
-                            keyword__iexact=detection['keyword'],
-                            is_active=True
-                        ).first()
-                        
+
+                        # In-memory lookup -- removes the per-detection SQL
+                        # round-trip that used to dominate the callback.
+                        keyword_obj = keyword_map.get(detection['keyword'].lower())
+
                         DetectedContent.objects.create(
                             page=page,
                             keyword=keyword_obj,
@@ -236,57 +259,76 @@ class RunScanView(View):
                             severity=detection.get('severity', 'medium'),
                             location=detection.get('location', 'content'),
                             confidence_score=confidence_score,
-                            safe_context_found=safe_context_str
+                            safe_context_found=safe_context_str,
                         )
-                        total_issues[0] += 1
-                        
+                        counters['total_issues'] += 1
+
                         # Log DETEKSI dengan format khusus agar bisa di-parse di frontend
                         category_display = {
                             'judol': 'Judi Online',
                             'obat_penguat': 'Obat Penguat',
                             'obat_aborsi': 'Obat Aborsi',
                             'konten_dewasa': 'Konten Dewasa',
-                            'penipuan': 'Penipuan'
+                            'penipuan': 'Penipuan',
                         }.get(detection['category'], detection['category'])
-                        
-                        # Tampilkan confidence level
+
                         confidence_label = ''
                         if confidence_score < 0.5:
                             confidence_label = ' [⚠️ Mungkin False Positive]'
                         elif confidence_score < 0.8:
                             confidence_label = ' [Perlu Review]'
-                        
+
                         ScanLog.objects.create(
                             scan_session=scan_session,
                             log_type='warning',
-                            message=f'🚨 TERDETEKSI: "{detection["matched_text"][:50]}" [{category_display}]{confidence_label}',
-                            url=url
+                            message=(
+                                f'🚨 TERDETEKSI: "{detection["matched_text"][:50]}" '
+                                f'[{category_display}]{confidence_label}'
+                            ),
+                            url=url,
                         )
-                
-                # Update progress
-                scan_session.pages_scanned = pages_scraped
-                scan_session.issues_found = total_issues[0]
-                scan_session.save(update_fields=['pages_scanned', 'issues_found'])
-            
+
+                # Throttle progress saves to at most once per second. The
+                # frontend polls every couple of seconds anyway, so writing
+                # ``ScanSession`` more often than that just slows SQLite down.
+                now = time.monotonic()
+                if (
+                    now - counters['last_progress_save'] >= PROGRESS_SAVE_INTERVAL_S
+                    or pages_scraped == max_pages
+                ):
+                    scan_session.pages_scanned = pages_scraped
+                    scan_session.issues_found = counters['total_issues']
+                    scan_session.save(update_fields=['pages_scanned', 'issues_found'])
+                    counters['last_progress_save'] = now
+
             # Jalankan crawling dengan real-time processing
             results = scraper.crawl(scan_session.target_url, callback=process_page_realtime)
+
+            # Single summary log for whitelisted skips so the UI still reflects
+            # that we honoured the whitelist, without per-skip log spam.
+            if counters['whitelisted_skips'] > 0:
+                ScanLog.objects.create(
+                    scan_session=scan_session,
+                    log_type='info',
+                    message=f'⏭️ Dilewati (whitelist): {counters["whitelisted_skips"]} deteksi',
+                )
             
             # Update final stats
             scan_session.pages_scanned = len(results)
-            scan_session.issues_found = total_issues[0]
+            scan_session.issues_found = counters['total_issues']
             scan_session.complete()
-            
+
             ScanLog.objects.create(
                 scan_session=scan_session,
                 log_type='success',
-                message=f'✅ Scan selesai! {len(results)} halaman, {total_issues[0]} konten negatif'
+                message=f'✅ Scan selesai! {len(results)} halaman, {counters["total_issues"]} konten negatif',
             )
-            
+
             return JsonResponse({
                 'success': True,
                 'pages_scanned': len(results),
-                'issues_found': total_issues[0],
-                'redirect_url': f'/scan/{scan_session.pk}/'
+                'issues_found': counters['total_issues'],
+                'redirect_url': f'/scan/{scan_session.pk}/',
             })
             
         except Exception as e:
