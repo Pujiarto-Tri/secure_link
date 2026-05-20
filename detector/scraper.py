@@ -254,6 +254,23 @@ class WebScraper:
             
             soup = BeautifulSoup(response.text, 'lxml')
             links = self.extract_links(soup, final_url)
+            
+            # Extract outbound (external) links
+            outbound_links = []
+            for a_tag in soup.find_all('a', href=True):
+                href = a_tag['href'].strip()
+                if href and not href.startswith(('javascript:', 'mailto:', 'tel:', '#', 'data:')):
+                    try:
+                        abs_url = urljoin(final_url, href)
+                        parsed_href = urlparse(abs_url)
+                        if parsed_href.netloc:
+                            href_domain = parsed_href.netloc.lower().replace('www.', '')
+                            base_clean = self.base_domain.replace('www.', '')
+                            if href_domain != base_clean and not href_domain.endswith('.' + base_clean):
+                                outbound_links.append(abs_url)
+                    except:
+                        pass
+
             content_data = self.extract_content(soup)
             
             parsed_url = urlparse(final_url)
@@ -266,6 +283,7 @@ class WebScraper:
                 'content': content_data['content'],
                 'http_status': response.status_code,
                 'links': links,
+                'outbound_links': outbound_links,
                 'success': True,
                 'error': None
             }
@@ -276,7 +294,8 @@ class WebScraper:
                 'success': False,
                 'error': 'Timeout (15s)',
                 'http_status': None,
-                'links': []
+                'links': [],
+                'outbound_links': []
             }
         except requests.exceptions.ConnectionError as e:
             return {
@@ -284,7 +303,8 @@ class WebScraper:
                 'success': False,
                 'error': f'Connection Error',
                 'http_status': None,
-                'links': []
+                'links': [],
+                'outbound_links': []
             }
         except requests.exceptions.HTTPError as e:
             return {
@@ -292,7 +312,8 @@ class WebScraper:
                 'success': False,
                 'error': f'HTTP {e.response.status_code if e.response else "Error"}',
                 'http_status': e.response.status_code if e.response else None,
-                'links': []
+                'links': [],
+                'outbound_links': []
             }
         except Exception as e:
             return {
@@ -300,7 +321,8 @@ class WebScraper:
                 'success': False,
                 'error': str(e)[:100],
                 'http_status': None,
-                'links': []
+                'links': [],
+                'outbound_links': []
             }
     
     def crawl(self, start_url: str, callback=None) -> List[Dict]:

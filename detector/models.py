@@ -125,6 +125,9 @@ class ScrapedPage(models.Model):
         verbose_name_plural = 'Halaman Terscrape'
         ordering = ['-scraped_at']
         unique_together = ['scan_session', 'url']
+        indexes = [
+            models.Index(fields=['scan_session', 'status']),
+        ]
     
     def __str__(self):
         return self.title or self.url
@@ -146,6 +149,11 @@ class DetectedContent(models.Model):
     is_false_positive = models.BooleanField(default=False, verbose_name='False Positive')
     safe_context_found = models.TextField(blank=True, verbose_name='Konteks Aman Ditemukan')
     
+    # Aggregation fields
+    match_count = models.IntegerField(default=1, verbose_name='Jumlah Cocokan')
+    unique_keywords = models.JSONField(default=list, blank=True, verbose_name='Kata Kunci Unik')
+    sample_contexts = models.JSONField(default=list, blank=True, verbose_name='Contoh Konteks')
+    
     is_reported = models.BooleanField(default=False, verbose_name='Sudah Dilaporkan')
     is_resolved = models.BooleanField(default=False, verbose_name='Sudah Ditangani')
     notes = models.TextField(blank=True, verbose_name='Catatan')
@@ -157,6 +165,10 @@ class DetectedContent(models.Model):
         verbose_name = 'Konten Terdeteksi'
         verbose_name_plural = 'Konten Terdeteksi'
         ordering = ['-detected_at']
+        indexes = [
+            models.Index(fields=['page', 'category']),
+            models.Index(fields=['confidence_score']),
+        ]
     
     def __str__(self):
         return f"{self.matched_text} di {self.page.url}"
@@ -192,6 +204,9 @@ class ScanLog(models.Model):
         verbose_name = 'Log Scan'
         verbose_name_plural = 'Log Scan'
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['scan_session', '-created_at']),
+        ]
     
     def __str__(self):
         return f"[{self.log_type}] {self.message[:50]}"

@@ -381,22 +381,15 @@ document.addEventListener('DOMContentLoaded', function() {
     })
     .then(response => response.json())
     .then(data => {
-        isComplete = true;
-        if (data.success) {
-            document.getElementById('scanProgress').style.display = 'none';
-            document.getElementById('scanComplete').style.display = 'block';
-            document.getElementById('finalPages').textContent = data.pages_scanned;
-            document.getElementById('finalIssues').textContent = data.issues_found;
-            document.getElementById('viewResultsBtn').href = data.redirect_url;
-            document.getElementById('statusBadge').className = 'badge badge-completed';
-            document.getElementById('statusBadge').textContent = 'Selesai';
-            document.getElementById('progressBar').style.width = '100%';
-        } else {
+        if (!data.success) {
+            isComplete = true;
             document.getElementById('scanProgress').style.display = 'none';
             document.getElementById('scanError').style.display = 'block';
-            document.getElementById('errorText').textContent = data.error;
+            document.getElementById('errorText').textContent = data.error || 'Gagal memulai pemindaian';
             document.getElementById('statusBadge').className = 'badge badge-failed';
             document.getElementById('statusBadge').textContent = 'Gagal';
+        } else {
+            console.log('Background scan successfully started:', data.message);
         }
     })
     .catch(error => {
@@ -404,6 +397,8 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('scanProgress').style.display = 'none';
         document.getElementById('scanError').style.display = 'block';
         document.getElementById('errorText').textContent = error.message;
+        document.getElementById('statusBadge').className = 'badge badge-failed';
+        document.getElementById('statusBadge').textContent = 'Gagal';
     });
     
     // Poll for logs and detections
@@ -419,7 +414,16 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('pagesScanned').textContent = data.pages_scanned;
             const progress = (data.pages_scanned / maxPages) * 100;
             document.getElementById('progressBar').style.width = Math.min(progress, 100) + '%';
-            document.getElementById('statusText').textContent = `Memindai halaman... (${data.pages_scanned}/${maxPages})`;
+            
+            if (data.status === 'running') {
+                document.getElementById('statusText').textContent = `Memindai halaman... (${data.pages_scanned}/${maxPages})`;
+                document.getElementById('statusBadge').className = 'badge badge-running';
+                document.getElementById('statusBadge').textContent = 'Berjalan';
+            } else if (data.status === 'pending') {
+                document.getElementById('statusText').textContent = 'Menunggu antrean...';
+                document.getElementById('statusBadge').className = 'badge badge-pending';
+                document.getElementById('statusBadge').textContent = 'Menunggu';
+            }
             
             // Add new logs
             if (data.logs.length > 0) {
@@ -529,12 +533,40 @@ document.addEventListener('DOMContentLoaded', function() {
                 document.getElementById('detectionCount').textContent = detectedList.querySelectorAll('tr').length;
             }
             
+            // Check status for completion/failure/cancellation
+            if (data.status === 'completed') {
+                isComplete = true;
+                document.getElementById('scanProgress').style.display = 'none';
+                document.getElementById('scanComplete').style.display = 'block';
+                document.getElementById('finalPages').textContent = data.pages_scanned;
+                document.getElementById('finalIssues').textContent = data.issues_found;
+                document.getElementById('viewResultsBtn').href = `/scan/${scanId}/`;
+                document.getElementById('statusBadge').className = 'badge badge-completed';
+                document.getElementById('statusBadge').textContent = 'Selesai';
+                document.getElementById('progressBar').style.width = '100%';
+            } else if (data.status === 'failed') {
+                isComplete = true;
+                document.getElementById('scanProgress').style.display = 'none';
+                document.getElementById('scanError').style.display = 'block';
+                document.getElementById('errorText').textContent = data.error_message || 'Terjadi kesalahan fatal saat memindai';
+                document.getElementById('statusBadge').className = 'badge badge-failed';
+                document.getElementById('statusBadge').textContent = 'Gagal';
+            } else if (data.status === 'cancelled') {
+                isComplete = true;
+                document.getElementById('scanProgress').style.display = 'none';
+                document.getElementById('scanError').style.display = 'block';
+                document.getElementById('errorText').textContent = 'Pemindaian dibatalkan oleh pengguna.';
+                document.getElementById('statusBadge').className = 'badge badge-failed';
+                document.getElementById('statusBadge').textContent = 'Dibatalkan';
+            }
+            
             // Continue polling
             if (!isComplete) {
                 setTimeout(fetchLogs, 1000);
             }
         })
         .catch(error => {
+            console.error('Error fetching logs:', error);
             if (!isComplete) {
                 setTimeout(fetchLogs, 2000);
             }

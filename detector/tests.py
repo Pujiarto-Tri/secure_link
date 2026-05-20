@@ -100,6 +100,64 @@ class ConfidenceScoreTestCase(TestCase):
                 f"Score di title ({score1}) harus >= score di content ({score2})")
         
         print(f"✓ Title location test passed: title_score={score1}, content_score={score2}")
+        
+    def test_outbound_links_boost_score(self):
+        """
+        Tautan keluar mencurigakan di domain .go.id harus menaikkan score ke 0.98+
+        """
+        title = "Berita Terbaru"
+        meta = "Dapatkan berita terbaru di situs kami"
+        content = "Silakan klik link alternatif slot gacor ini untuk bermain judi online terpercaya."
+        url = "https://lombokbaratkab.go.id/berita/1"
+        outbound = ["https://judi-slot-online.xyz/register"]
+        
+        detections, score, safe_context = self.detector.detect_in_sections(title, meta, content, url, outbound_links=outbound)
+        
+        self.assertGreater(len(detections), 0)
+        self.assertGreaterEqual(score, 0.95, f"Score {score} harus >= 0.95 karena ada outbound link mencurigakan di .go.id")
+        print(f"✓ Outbound link boost test passed: score={score}")
+
+    def test_keyword_density_lowers_score(self):
+        """
+        Kerapatan kata kunci yang rendah (hanya 1 keyword di teks sangat panjang) harus menurunkan score
+        """
+        title = "Pengumuman Resmi"
+        meta = "Pengumuman hasil seleksi administrasi"
+        # Teks panjang > 1000 karakter, hanya 1 keyword "slot"
+        content = "Ini adalah pengumuman resmi hasil seleksi administrasi pegawai pemerintah. " + "a " * 800 + " slot " + "b " * 800
+        url = "https://lombokbaratkab.go.id/pengumuman"
+        
+        detections, score, _ = self.detector.detect_in_sections(title, meta, content, url)
+        self.assertEqual(len(detections), 1)
+        self.assertLess(score, 0.50, f"Score {score} harus < 0.50 karena kepadatan sangat rendah")
+        print(f"✓ Keyword density dampening test passed: score={score}")
+
+    def test_keyword_diversity_increases_score(self):
+        """
+        Keberagaman kata kunci negatif dalam satu kategori harus menaikkan score
+        """
+        title = "Daftar Akun"
+        meta = "Main judi online"
+        content = "Daftar slot online dengan bandar togel terpercaya judi online maxwin hari ini."
+        
+        detections, score, _ = self.detector.detect_in_sections(title, meta, content)
+        
+        # Keunikan keyword negatif cukup tinggi (slot, judi online, bandar togel, maxwin)
+        self.assertGreaterEqual(score, 0.85, f"Score {score} harus tinggi karena diversitas kata kunci negatif tinggi")
+        print(f"✓ Keyword diversity test passed: score={score}")
+
+    def test_proximity_clustering_increases_score(self):
+        """
+        Clustering kata kunci yang berdekatan harus menaikkan score
+        """
+        title = "Promo"
+        meta = "Promo slot"
+        # 3 hits berturut-turut berdekatan
+        content = "Kami menawarkan slot online terpercaya judi online slot gacor!"
+        
+        detections, score, _ = self.detector.detect_in_sections(title, meta, content)
+        self.assertGreaterEqual(score, 0.85, f"Score {score} harus tinggi karena clustering")
+        print(f"✓ Proximity clustering test passed: score={score}")
 
 
 class SafeContextKeywordsTestCase(TestCase):

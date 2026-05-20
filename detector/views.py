@@ -109,215 +109,26 @@ class RunScanView(View):
     def post(self, request, pk):
         scan_session = get_object_or_404(ScanSession, pk=pk)
         
-        if scan_session.status not in ['pending', 'failed']:
+        if scan_session.status not in ['pending', 'failed', 'cancelled']:
             return JsonResponse({
                 'success': False, 
                 'error': 'Scan sudah berjalan atau selesai'
             })
         
-        # Mulai scan
-        scan_session.start()
+        # Set status as pending (which the runner thread will change to running)
+        scan_session.status = 'pending'
+        scan_session.save(update_fields=['status'])
         
-        # Log mulai scan
-        ScanLog.objects.create(
-            scan_session=scan_session,
-            log_type='info',
-            message=f'Memulai pemindaian {scan_session.target_url}'
-        )
+        # Start background scan
+        from . import runner
+        runner.enqueue(scan_session.pk)
         
-        try:
-            # Parse domain dari URL
-            from urllib.parse import urlparse
-            parsed = urlparse(scan_session.target_url)
-            domain = parsed.netloc
-            
-            # Inisialisasi detector SEBELUM crawling agar bisa deteksi real-time
-            detector = ContentDetector()
-            active_keywords = Keyword.objects.filter(is_active=True)
-            detector.load_keywords_from_db(active_keywords)
-            
-            # Buat in-memory keyword map untuk pencarian cepat tanpa query SQL berulang
-            keyword_map = {kw.keyword.lower(): kw for kw in active_keywords}
-            
-            # Load whitelist untuk filter false positives
-            active_whitelist = Whitelist.objects.filter(is_active=True)
-            detector.load_whitelist_from_db(active_whitelist)
-            
-            # State throttling dan cache
-            last_save_time = [time.time()]
-            seen_errors = set()
-            seen_whitelisted = set()
-            
-            # Counter untuk total issues (menggunakan list agar bisa dimodifikasi dalam closure)
-            total_issues = [0]
-            
-            # Inisialisasi scraper
-            scraper = WebScraper(
-                base_domain=domain,
-                delay=0.2,
-                timeout=30,
-                max_pages=scan_session.max_pages,
-                scan_subdomains=scan_session.scan_subdomains,
-                max_workers=12
-            )
-            
-            # Callback untuk REAL-TIME processing: crawl + detect + save
-            def process_page_realtime(result, pages_scraped, max_pages):
-                # Cek apakah scan dibatalkan
-                if scan_session.should_stop():
-                    ScanLog.objects.create(
-                        scan_session=scan_session,
-                        log_type='warning',
-                        message='Scan dibatalkan oleh pengguna'
-                    )
-                    scraper.cancel()
-                    return
-                
-                url = result.get('url', '')
-                
-                # Log progress - Throttle success logging to every 10 pages or last page
-                if result.get('success'):
-                    if pages_scraped % 10 == 0 or pages_scraped == max_pages:
-                        ScanLog.objects.create(
-                            scan_session=scan_session,
-                            log_type='success',
-                            message=f'[{pages_scraped}/{max_pages}] Berhasil: {url[:80]}',
-                            url=url
-                        )
-                else:
-                    error_msg = result.get('error', 'Unknown error')
-                    if error_msg not in seen_errors:
-                        seen_errors.add(error_msg)
-                        ScanLog.objects.create(
-                            scan_session=scan_session,
-                            log_type='error',
-                            message=f'[{pages_scraped}/{max_pages}] Gagal: {url[:60]} - {error_msg}',
-                            url=url
-                        )
-                
-                # SIMPAN halaman ke database SEGERA
-                page, created = ScrapedPage.objects.get_or_create(
-                    scan_session=scan_session,
-                    url=result['url'],
-                    defaults={
-                        'domain': result.get('domain', '') or '',
-                        'title': (result.get('title', '') or '')[:500],
-                        'meta_description': result.get('meta_description', '') or '',
-                        'content': result.get('content', '') or '',
-                        'http_status': result.get('http_status'),
-                        'status': 'scraped' if result.get('success') else 'failed',
-                        'error_message': result.get('error') or '',
-                        'scraped_at': timezone.now()
-                    }
-                )
-                
-                # DETEKSI konten negatif SEGERA (real-time)
-                if result.get('success'):
-                    url = result.get('url', '')
-                    detections, confidence_score, safe_context = detector.detect_in_sections(
-                        title=result.get('title', ''),
-                        meta_description=result.get('meta_description', ''),
-                        content=result.get('content', ''),
-                        url=url
-                    )
-                    
-                    safe_context_str = ', '.join(safe_context) if safe_context else ''
-                    
-                    for detection in detections:
-                        # Skip jika URL+keyword di-whitelist
-                        if detector.is_whitelisted(url, detection['keyword']):
-                            whitelist_key = (url, detection['keyword'])
-                            if whitelist_key not in seen_whitelisted:
-                                seen_whitelisted.add(whitelist_key)
-                                ScanLog.objects.create(
-                                    scan_session=scan_session,
-                                    log_type='info',
-                                    message=f'⏭️ Dilewati (whitelist): "{detection["keyword"]}" di {url[:50]}',
-                                    url=url
-                                )
-                            continue
-                        
-                        keyword_obj = keyword_map.get(detection['keyword'].lower())
-                        
-                        DetectedContent.objects.create(
-                            page=page,
-                            keyword=keyword_obj,
-                            matched_text=detection['matched_text'][:200],
-                            context=detection['context'][:1000],
-                            category=detection['category'],
-                            severity=detection.get('severity', 'medium'),
-                            location=detection.get('location', 'content'),
-                            confidence_score=confidence_score,
-                            safe_context_found=safe_context_str
-                        )
-                        total_issues[0] += 1
-                        
-                        # Log DETEKSI dengan format khusus agar bisa di-parse di frontend
-                        # Hanya tulis di ScanLog jika confidence_score >= 0.7
-                        if confidence_score >= 0.7:
-                            category_display = {
-                                'judol': 'Judi Online',
-                                'obat_penguat': 'Obat Penguat',
-                                'obat_aborsi': 'Obat Aborsi',
-                                'konten_dewasa': 'Konten Dewasa',
-                                'penipuan': 'Penipuan'
-                            }.get(detection['category'], detection['category'])
-                            
-                            # Tampilkan confidence level
-                            confidence_label = ''
-                            if confidence_score < 0.5:
-                                confidence_label = ' [⚠️ Mungkin False Positive]'
-                            elif confidence_score < 0.8:
-                                confidence_label = ' [Perlu Review]'
-                            
-                            ScanLog.objects.create(
-                                scan_session=scan_session,
-                                log_type='warning',
-                                message=f'🚨 TERDETEKSI: "{detection["matched_text"][:50]}" [{category_display}]{confidence_label}',
-                                url=url
-                            )
-                
-                # Update progress - Save progress at most once every 2 seconds or on the very last page
-                current_time = time.time()
-                if current_time - last_save_time[0] >= 2.0 or pages_scraped == max_pages:
-                    scan_session.pages_scanned = pages_scraped
-                    scan_session.issues_found = total_issues[0]
-                    scan_session.save(update_fields=['pages_scanned', 'issues_found'])
-                    last_save_time[0] = current_time
-            
-            # Jalankan crawling dengan real-time processing
-            results = scraper.crawl(scan_session.target_url, callback=process_page_realtime)
-            
-            # Update final stats
-            scan_session.pages_scanned = len(results)
-            scan_session.issues_found = total_issues[0]
-            scan_session.complete()
-            
-            ScanLog.objects.create(
-                scan_session=scan_session,
-                log_type='success',
-                message=f'✅ Scan selesai! {len(results)} halaman, {total_issues[0]} konten negatif'
-            )
-            
-            return JsonResponse({
-                'success': True,
-                'pages_scanned': len(results),
-                'issues_found': total_issues[0],
-                'redirect_url': f'/scan/{scan_session.pk}/'
-            })
-            
-        except Exception as e:
-            logger.exception("Error during scan")
-            scan_session.fail(str(e))
-            ScanLog.objects.create(
-                scan_session=scan_session,
-                log_type='error',
-                message=f'Error: {str(e)}'
-            )
-            return JsonResponse({
-                'success': False,
-                'error': str(e)
-            })
+        return JsonResponse({
+            'success': True,
+            'message': 'Pemindaian berhasil dimulai di background.',
+            'redirect_url': f'/scan/{scan_session.pk}/'
+        })
+
 
 
 class CancelScanView(View):
@@ -403,6 +214,7 @@ class ScanLogsView(View):
             'pages_scanned': scan_session.pages_scanned,
             'max_pages': scan_session.max_pages,
             'issues_found': scan_session.issues_found,
+            'error_message': scan_session.error_message,
             'logs': logs_data,
             'detections': detections_data
         })

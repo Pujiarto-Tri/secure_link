@@ -3,6 +3,7 @@ Content Detector - Engine untuk mendeteksi konten negatif
 """
 import re
 from typing import List, Dict, Tuple
+from urllib.parse import urlparse
 
 
 class ContentDetector:
@@ -265,16 +266,18 @@ class ContentDetector:
         detections: List[Dict], 
         full_text: str, 
         title: str = '', 
-        url: str = ''
+        url: str = '',
+        outbound_links: List[str] = None
     ) -> Tuple[float, List[str]]:
         """
-        Menghitung confidence score berdasarkan konteks
+        Menghitung confidence score berdasarkan konteks bukti yang kaya
         
         Args:
             detections: List hasil deteksi di halaman ini
             full_text: Seluruh teks halaman (title + meta + content)
             title: Judul halaman
             url: URL halaman
+            outbound_links: List URL outbound eksternal dari halaman ini
             
         Returns:
             Tuple: (confidence_score 0.0-1.0, list safe_context_found)
@@ -282,8 +285,8 @@ class ContentDetector:
         if not detections:
             return 0.0, []
         
-        # Base score dimulai dari 1.0 (paling tinggi)
-        score = 1.0
+        # Base score dimulai dari 0.70
+        score = 0.70
         all_safe_context = []
         
         # Kumpulkan semua kategori yang terdeteksi
@@ -298,51 +301,104 @@ class ContentDetector:
         # Lebih banyak safe context = score lebih rendah
         num_safe = len(set(all_safe_context))  # unique safe words
         if num_safe > 0:
-            # Setiap safe word mengurangi score 0.1, maksimal 0.5 reduksi
-            reduction = min(num_safe * 0.1, 0.5)
+            # Setiap safe word mengurangi score 0.15, maksimal 0.50 reduksi
+            reduction = min(num_safe * 0.15, 0.50)
             score -= reduction
         
-        # Faktor 2: Rasio keyword negatif vs panjang teks
-        # Jika hanya 1 keyword di teks panjang = kemungkinan false positive
+        # Faktor 2: Rasio keyword negatif vs panjang teks (Density)
         num_detections = len(detections)
         text_length = len(full_text)
         
-        if text_length > 1000 and num_detections <= 2:
-            # Teks panjang dengan sedikit deteksi = mungkin false positive
-            score -= 0.15
+        if text_length > 1000:
+            density = num_detections / text_length
+            if density < 0.0005:  # < 0.05%
+                score -= 0.15
+            if num_detections == 1:
+                # Hanya 1 kata kunci di seluruh tubuh teks yang besar -> kemungkinan tinggi FP
+                score -= 0.25
         
         # Faktor 3: Lokasi deteksi
-        # Jika TIDAK ada di title/meta (hanya di content) = sedikit lebih rendah
         locations = set(d.get('location', 'content') for d in detections)
+        if 'title' in locations:
+            score += 0.15
+        if 'meta' in locations:
+            score += 0.10
         if 'title' not in locations and 'meta' not in locations:
-            score -= 0.1
+            # Hanya ada di content
+            score -= 0.05
         
-        # Faktor 4: Kategori tertentu lebih mungkin false positive
-        # obat_aborsi dan konten_dewasa lebih rentan false positive
-        high_fp_categories = {'obat_aborsi', 'konten_dewasa', 'obat_penguat'}
-        if categories.issubset(high_fp_categories) and num_safe > 0:
-            score -= 0.1
+        # Faktor 4: Keyword Diversity
+        # Hitung keunikan kata kunci negatif yang cocok
+        unique_negative_keywords = set(d['keyword'].lower() for d in detections)
+        if len(unique_negative_keywords) >= 3:
+            score += 0.15
+        elif len(unique_negative_keywords) >= 2:
+            score += 0.05
+            
+        # Faktor 5: Proximity Clustering
+        # Cek jika ada >= 3 hits kata kunci yang berdekatan dalam 300 karakter
+        positions = sorted(d.get('position', 0) for d in detections if d.get('position') is not None)
+        has_cluster = False
+        if len(positions) >= 3:
+            for i in range(len(positions) - 2):
+                if positions[i+2] - positions[i] <= 300:
+                    has_cluster = True
+                    break
+        if has_cluster:
+            score += 0.15
+
+        # Faktor 6: Analisis Outbound Link
+        # Cari pola mencurigakan pada tautan keluar (outbound links)
+        has_suspicious_outbound = False
+        if outbound_links:
+            suspicious_patterns = re.compile(
+                r'slot|togel|gacor|judi|bola|maxwin|casino|poker|betting|'
+                r'\.xyz\b|\.online\b|\.win\b|\.bet\b|\.live\b|\.cc\b|\.top\b|\.vip\b|\.site\b',
+                re.IGNORECASE
+            )
+            for link in outbound_links:
+                parsed_link = urlparse(link)
+                link_host = parsed_link.netloc.lower()
+                link_path = parsed_link.path.lower()
+                if suspicious_patterns.search(link_host) or suspicious_patterns.search(link_path):
+                    has_suspicious_outbound = True
+                    break
         
-        # Faktor 5: Cek URL untuk domain pemerintah dengan kategori non-judol
+        if has_suspicious_outbound:
+            # Jika ada tautan ke judi/slot di situs pemerintahan .go.id, hampir pasti 100% defacement
+            if url and '.go.id' in url.lower():
+                score = max(score, 0.98)
+            else:
+                score += 0.25
+
+        # Faktor 7: Institution & News Dampening
+        dampen = False
+        if categories.intersection({'obat_aborsi', 'obat_penguat'}):
+            health_institutions = ['puskesmas', 'rsud', 'rumah sakit', 'dinas kesehatan', 'posyandu', 'kemenkes', 'sehat', 'health']
+            news_contexts = ['berita', 'artikel', 'info', 'news', 'edukasi', 'penyuluhan', 'sosialisasi']
+            
+            title_lower = title.lower()
+            url_lower = url.lower()
+            
+            for keyword in health_institutions + news_contexts:
+                if keyword in title_lower or keyword in url_lower:
+                    dampen = True
+                    break
+                    
+        if dampen:
+            score -= 0.35
+            
+        # Faktor 8: Domain pemerintah dengan kategori kesehatan/dewasa/penipuan
         if url and '.go.id' in url.lower():
             if 'judol' not in categories and 'penipuan' not in categories:
-                # Domain pemerintah dengan kategori kesehatan = mungkin false positive
-                score -= 0.1
+                score -= 0.10
         
-        # Faktor 6: Cek title untuk kata-kata institusi kesehatan
-        health_institutions = ['puskesmas', 'rsud', 'rumah sakit', 'dinas kesehatan', 'posyandu']
-        title_lower = title.lower()
-        for inst in health_institutions:
-            if inst in title_lower:
-                score -= 0.15
-                break
-        
-        # Pastikan score dalam range 0.0 - 1.0
+        # Batasi rentang score ke [0.0, 1.0]
         score = max(0.0, min(1.0, score))
         
         return round(score, 2), list(set(all_safe_context))
     
-    def detect_in_sections(self, title: str, meta_description: str, content: str, url: str = '') -> Tuple[List[Dict], float, List[str]]:
+    def detect_in_sections(self, title: str, meta_description: str, content: str, url: str = '', outbound_links: List[str] = None) -> Tuple[List[Dict], float, List[str]]:
         """
         Mendeteksi konten negatif di berbagai bagian halaman
         
@@ -351,6 +407,7 @@ class ContentDetector:
             meta_description: Meta description halaman
             content: Konten utama halaman
             url: URL halaman (untuk analisis konteks)
+            outbound_links: List URL outbound eksternal dari halaman ini
             
         Returns:
             Tuple: (list deteksi, confidence_score, list safe_context_found)
@@ -381,7 +438,7 @@ class ContentDetector:
         # Hitung confidence score berdasarkan konteks
         full_text = f"{title} {meta_description} {content}"
         confidence_score, safe_context = self.calculate_confidence_score(
-            all_detections, full_text, title, url
+            all_detections, full_text, title, url, outbound_links=outbound_links
         )
         
         # Tambahkan confidence ke setiap deteksi
