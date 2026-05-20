@@ -16,10 +16,10 @@ class ConfidenceScoreTestCase(TestCase):
         Konten dengan kata negatif DAN kata safe context
         harus punya confidence score lebih rendah
         """
-        # Konten puskesmas dengan kata "rahim" (kategori obat_aborsi)
+        # Konten puskesmas dengan kata "misoprostol" (kategori obat_aborsi)
         title = "Penyuluhan Kesehatan Ibu dan Anak - Puskesmas Sejahtera"
-        meta = "Puskesmas Sejahtera memberikan edukasi tentang kesehatan rahim dan kandungan bagi ibu hamil"
-        content = "Tim dokter dari Puskesmas Sejahtera mengadakan penyuluhan kesehatan reproduksi untuk ibu-ibu di desa. Materi yang disampaikan meliputi kesehatan rahim dan cara menjaga kehamilan."
+        meta = "Puskesmas Sejahtera memberikan edukasi tentang penggunaan misoprostol dan kandungan bagi ibu hamil"
+        content = "Tim dokter dari Puskesmas Sejahtera mengadakan penyuluhan kesehatan reproduksi untuk ibu-ibu di desa. Materi yang disampaikan meliputi efek samping misoprostol dan cara menjaga kehamilan."
         url = "https://puskesmassejahtera.go.id/berita/penyuluhan"
         
         detections, score, safe_context = self.detector.detect_in_sections(title, meta, content, url)

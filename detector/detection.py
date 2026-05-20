@@ -18,26 +18,30 @@ class ContentDetector:
             'bandar togel', 'bandar bola', 'sportsbook', 'live casino', 'rtp slot',
             'bocoran slot', 'pola slot', 'jam gacor', 'link alternatif', 'daftar slot',
             'akun pro', 'akun demo', 'freespin', 'bonus new member', 'turnover',
-            'withdraw', 'depo', 'wd', 'slot88', 'slot777', 'joker123', 'habanero',
+            'slot88', 'slot777', 'joker123', 'habanero',
             'bandar judi', 'situs judi', 'agen slot', 'agen togel', 'toto gelap',
             'prediksi hk', 'prediksi sgp', 'prediksi sydney', 'angka main', 'angka jitu',
-            'colok bebas', 'colok naga', '4d', '3d', '2d', 'shio', 'ekor',
+            'colok bebas', 'colok naga',
             'slot gacor hari ini', 'rtp tertinggi', 'scatter hitam', 'wild multiplier',
-            'spin gratis', 'bonus deposit', 'cashback', 'referral', 'vip member',
+            'spin gratis', 'bonus deposit', 'vip member',
+            'wd cepat', 'wd lancar', 'depo pulsa', 'depo dana', 'cashback slot',
+            'cashback turnover', 'referral judi', 'forex bodong', 'crypto judi'
         ],
         'obat_penguat': [
             'viagra', 'cialis', 'levitra', 'obat kuat', 'stamina pria', 'tahan lama',
             'pembesar', 'ereksi', 'vitalitas', 'libido', 'disfungsi ereksi',
             'obat perkasa', 'obat jantan', 'herbal pria', 'suplemen pria',
-            'kuat pria', 'obat lelaki', 'obat dewasa', 'pil biru', 'hammer of thor',
-            'titan gel', 'klg pills', 'forex', 'vimax', 'obat impotensi',
+            'kuat pria', 'obat lelaki', 'pil biru', 'hammer of thor',
+            'titan gel', 'klg pills', 'vimax', 'obat impotensi',
             'obat lemah syahwat', 'mr p', 'alat vital', 'obat loyo',
+            'obat kuat dewasa'
         ],
         'obat_aborsi': [
             'obat aborsi', 'obat gugurkan', 'obat telat bulan', 'misoprostol', 'cytotec',
             'gastrul', 'obat penggugur', 'cara menggugurkan', 'gugurkan kandungan',
-            'rahim', 'obat tuntas', 'obat ampuh gugur', 'klinik aborsi',
+            'obat tuntas', 'obat ampuh gugur', 'klinik aborsi',
             'obat pelancar haid', 'terlambat datang bulan', 'obat terlambat haid',
+            'gugurkan rahim', 'obat rahim aborsi', 'bersihkan rahim'
         ],
         'konten_dewasa': [
             'bokep', 'porn', 'xxx', 'sex video', 'nude', 'naked',
@@ -101,6 +105,36 @@ class ContentDetector:
                     self.keywords[category].extend(words)
                 else:
                     self.keywords[category] = words
+        self.compile_patterns()
+    
+    def compile_patterns(self):
+        """Compile keyword and safe context patterns for each category to scan in a single pass."""
+        self._compiled_patterns = {}
+        self._keyword_casing_map = {}
+        for category, keywords in self.keywords.items():
+            if not keywords:
+                continue
+            # Sort by length descending so longer words match first in alternation
+            sorted_kws = sorted(set(k.lower() for k in keywords if k), key=len, reverse=True)
+            if sorted_kws:
+                for kw in keywords:
+                    if kw:
+                        self._keyword_casing_map[kw.lower()] = kw
+                pattern_str = r'\b(?:' + '|'.join(re.escape(k) for k in sorted_kws) + r')\b'
+                self._compiled_patterns[category] = re.compile(pattern_str, re.IGNORECASE)
+
+        self._compiled_safe_patterns = {}
+        self._safe_keyword_casing_map = {}
+        for category, keywords in self.SAFE_CONTEXT_KEYWORDS.items():
+            if not keywords:
+                continue
+            sorted_kws = sorted(set(k.lower() for k in keywords if k), key=len, reverse=True)
+            if sorted_kws:
+                for kw in keywords:
+                    if kw:
+                        self._safe_keyword_casing_map[kw.lower()] = kw
+                pattern_str = r'\b(?:' + '|'.join(re.escape(k) for k in sorted_kws) + r')\b'
+                self._compiled_safe_patterns[category] = re.compile(pattern_str, re.IGNORECASE)
     
     def load_keywords_from_db(self, keyword_queryset):
         """
@@ -115,6 +149,7 @@ class ContentDetector:
                     self.keywords[kw.category].append(kw.keyword.lower())
             else:
                 self.keywords[kw.category] = [kw.keyword.lower()]
+        self.compile_patterns()
     
     def load_whitelist_from_db(self, whitelist_queryset):
         """
@@ -175,32 +210,32 @@ class ContentDetector:
             List of dictionaries berisi informasi deteksi
         """
         detections = []
-        text_lower = text.lower()
-        
-        for category, keywords in self.keywords.items():
-            for keyword in keywords:
-                keyword_lower = keyword.lower()
-                # Gunakan regex untuk word boundary matching
-                pattern = r'\b' + re.escape(keyword_lower) + r'\b'
+        if not hasattr(self, '_compiled_patterns'):
+            self.compile_patterns()
+            
+        for category, pattern in self._compiled_patterns.items():
+            for match in pattern.finditer(text):
+                matched_text = match.group(0)
+                matched_text_lower = matched_text.lower()
+                keyword = self._keyword_casing_map.get(matched_text_lower, matched_text)
                 
-                for match in re.finditer(pattern, text_lower):
-                    start = max(0, match.start() - context_length)
-                    end = min(len(text), match.end() + context_length)
-                    context = text[start:end]
-                    
-                    # Tambahkan penanda awal dan akhir konteks
-                    if start > 0:
-                        context = '...' + context
-                    if end < len(text):
-                        context = context + '...'
-                    
-                    detections.append({
-                        'keyword': keyword,
-                        'matched_text': text[match.start():match.end()],
-                        'category': category,
-                        'context': context,
-                        'position': match.start(),
-                    })
+                start = max(0, match.start() - context_length)
+                end = min(len(text), match.end() + context_length)
+                context = text[start:end]
+                
+                # Tambahkan penanda awal dan akhir konteks
+                if start > 0:
+                    context = '...' + context
+                if end < len(text):
+                    context = context + '...'
+                
+                detections.append({
+                    'keyword': keyword,
+                    'matched_text': matched_text,
+                    'category': category,
+                    'context': context,
+                    'position': match.start(),
+                })
         
         return detections
     
@@ -215,15 +250,15 @@ class ContentDetector:
         Returns:
             List kata-kata safe context yang ditemukan
         """
-        found_safe_words = []
-        text_lower = text.lower()
-        
-        safe_keywords = self.SAFE_CONTEXT_KEYWORDS.get(category, [])
-        for safe_word in safe_keywords:
-            if safe_word.lower() in text_lower:
-                found_safe_words.append(safe_word)
-        
-        return found_safe_words
+        if not hasattr(self, '_compiled_safe_patterns'):
+            self.compile_patterns()
+            
+        pattern = self._compiled_safe_patterns.get(category)
+        if not pattern:
+            return []
+            
+        matches = pattern.findall(text)
+        return list(set(self._safe_keyword_casing_map.get(m.lower(), m) for m in matches))
     
     def calculate_confidence_score(
         self, 

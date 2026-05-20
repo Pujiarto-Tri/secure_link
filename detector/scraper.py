@@ -6,10 +6,11 @@ import re
 import time
 import logging
 import urllib3
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse, parse_qsl, urlencode
 from typing import Set, List, Dict, Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, FIRST_COMPLETED, wait
 import threading
+from collections import deque
 
 import requests
 from bs4 import BeautifulSoup
@@ -19,6 +20,18 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# C-optimized extensions tuple
+SKIP_EXTENSIONS = (
+    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+    '.zip', '.rar', '.tar', '.gz', '.7z',
+    '.jpg', '.jpeg', '.png', '.gif', '.svg', '.ico', '.webp', '.bmp',
+    '.mp3', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.wav',
+    '.css', '.js', '.json', '.xml', '.rss', '.atom',
+    '.woff', '.woff2', '.ttf', '.eot', '.otf',
+)
+
+CONTENT_RE = re.compile(r'content|main|body', re.I)
 
 
 class WebScraper:
@@ -76,8 +89,8 @@ class WebScraper:
         
         # Connection pooling for better performance
         adapter = requests.adapters.HTTPAdapter(
-            pool_connections=10,
-            pool_maxsize=10,
+            pool_connections=self.max_workers,
+            pool_maxsize=self.max_workers * 2,
             max_retries=1
         )
         self.session.mount('http://', adapter)
@@ -112,18 +125,9 @@ class WebScraper:
                 if domain_clean != base_clean:
                     return False
             
-            skip_extensions = [
-                '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-                '.zip', '.rar', '.tar', '.gz', '.7z',
-                '.jpg', '.jpeg', '.png', '.gif', '.svg', '.ico', '.webp', '.bmp',
-                '.mp3', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.wav',
-                '.css', '.js', '.json', '.xml', '.rss', '.atom',
-                '.woff', '.woff2', '.ttf', '.eot', '.otf',
-            ]
             path_lower = parsed.path.lower()
-            for ext in skip_extensions:
-                if path_lower.endswith(ext):
-                    return False
+            if path_lower.endswith(SKIP_EXTENSIONS):
+                return False
             
             return True
             
@@ -135,12 +139,35 @@ class WebScraper:
         try:
             url = url.split('#')[0]
             parsed = urlparse(url)
-            if parsed.path != '/':
-                url = url.rstrip('/')
-            if parsed.netloc:
-                url = url.replace(parsed.netloc, parsed.netloc.lower())
-            return url
-        except:
+            
+            # Lowercase scheme and netloc
+            scheme = parsed.scheme.lower()
+            netloc = parsed.netloc.lower()
+            
+            # Collapse trailing slashes in path
+            path = parsed.path
+            if path != '/':
+                path = path.rstrip('/')
+            if not path:
+                path = '/'
+                
+            # Parse query params, drop tracking parameters and session IDs, and sort them
+            query_params = parse_qsl(parsed.query)
+            ignored_params = {
+                'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+                'gclid', 'fbclid', 'phpsessid', 'sid', 'jsessionid'
+            }
+            filtered_params = [
+                (k, v) for k, v in query_params 
+                if k.lower() not in ignored_params
+            ]
+            filtered_params.sort()
+            
+            query = urlencode(filtered_params) if filtered_params else ''
+            
+            # Reconstruct URL without fragment
+            return urlunparse((scheme, netloc, path, parsed.params, query, ''))
+        except Exception:
             return url
     
     def extract_links(self, soup: BeautifulSoup, current_url: str) -> List[str]:
@@ -170,33 +197,31 @@ class WebScraper:
         return list(set(links))
     
     def extract_content(self, soup: BeautifulSoup) -> Dict[str, str]:
-        """Mengekstrak konten dari halaman"""
-        soup_copy = BeautifulSoup(str(soup), 'lxml')
-        
+        """Mengekstrak konten dari halaman (decomposes soup elements in-place)"""
         title = ''
-        title_tag = soup_copy.find('title')
+        title_tag = soup.find('title')
         if title_tag:
             title = title_tag.get_text(strip=True)
         
         meta_description = ''
-        meta_tag = soup_copy.find('meta', attrs={'name': 'description'})
+        meta_tag = soup.find('meta', attrs={'name': 'description'})
         if meta_tag and meta_tag.get('content'):
             meta_description = meta_tag['content']
         
-        for element in soup_copy(['script', 'style', 'noscript', 'iframe', 'svg']):
+        for element in soup(['script', 'style', 'noscript', 'iframe', 'svg']):
             element.decompose()
         
         main_content = (
-            soup_copy.find('main') or 
-            soup_copy.find('article') or 
-            soup_copy.find('div', {'id': re.compile(r'content|main|body', re.I)}) or
-            soup_copy.find('div', {'class': re.compile(r'content|main|body', re.I)})
+            soup.find('main') or 
+            soup.find('article') or 
+            soup.find('div', {'id': CONTENT_RE}) or
+            soup.find('div', {'class': CONTENT_RE})
         )
         
         if main_content:
             content = main_content.get_text(separator=' ', strip=True)
         else:
-            body = soup_copy.find('body')
+            body = soup.find('body')
             content = body.get_text(separator=' ', strip=True) if body else ''
         
         content = re.sub(r'\s+', ' ', content).strip()
@@ -228,8 +253,8 @@ class WebScraper:
                 return None
             
             soup = BeautifulSoup(response.text, 'lxml')
-            content_data = self.extract_content(soup)
             links = self.extract_links(soup, final_url)
+            content_data = self.extract_content(soup)
             
             parsed_url = urlparse(final_url)
             
@@ -280,7 +305,7 @@ class WebScraper:
     
     def crawl(self, start_url: str, callback=None) -> List[Dict]:
         """
-        Melakukan crawling dengan concurrent requests
+        Melakukan crawling dengan concurrent requests dan persistent pipeline
         
         Args:
             start_url: URL awal untuk memulai crawling
@@ -288,39 +313,34 @@ class WebScraper:
         """
         results = []
         normalized_start = self.normalize_url(start_url)
-        urls_to_visit = [normalized_start]
+        urls_to_visit = deque([normalized_start])
+        enqueued_urls = {normalized_start}
         
         logger.info(f"Starting concurrent crawl: {normalized_start}")
         logger.info(f"Max pages: {self.max_pages} | Workers: {self.max_workers}")
         
-        while urls_to_visit and self.pages_scraped < self.max_pages and not self.cancelled:
-            # Get batch of URLs to process concurrently
-            batch_size = min(self.max_workers, self.max_pages - self.pages_scraped, len(urls_to_visit))
-            batch = []
+        # Set up a persistent ThreadPoolExecutor for streaming crawl execution
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {}
             
-            for _ in range(batch_size):
-                if not urls_to_visit:
-                    break
-                url = urls_to_visit.pop(0)
-                if url not in self.visited_urls:
+            while (urls_to_visit or futures) and self.pages_scraped < self.max_pages and not self.cancelled:
+                # 1. Submit outstanding URLs as long as we have workers and capacity
+                while urls_to_visit and len(futures) < self.max_workers and self.pages_scraped + len(futures) < self.max_pages:
+                    url = urls_to_visit.popleft()
                     self.visited_urls.add(url)
-                    batch.append(url)
-            
-            if not batch:
-                continue
-            
-            # Process batch concurrently
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                future_to_url = {executor.submit(self.scrape_page, url): url for url in batch}
+                    future = executor.submit(self.scrape_page, url)
+                    futures[future] = url
                 
-                for future in as_completed(future_to_url):
-                    if self.cancelled:
-                        break
-                        
-                    url = future_to_url[future]
+                if not futures:
+                    break
+                
+                # 2. Wait for at least one worker to finish
+                done, _ = wait(futures.keys(), return_when=FIRST_COMPLETED)
+                
+                for future in done:
+                    url = futures.pop(future)
                     try:
                         result = future.result()
-                        
                         if result:
                             results.append(result)
                             with self.lock:
@@ -331,18 +351,19 @@ class WebScraper:
                             if callback:
                                 callback(result, self.pages_scraped, self.max_pages)
                             
-                            # Add new links to queue
-                            if result.get('success') and result.get('links'):
+                            # Add new links to queue immediately
+                            if result.get('success') and result.get('links') and not self.cancelled:
                                 for link in result['links']:
-                                    if link not in self.visited_urls and link not in urls_to_visit:
+                                    if link not in self.visited_urls and link not in enqueued_urls:
+                                        enqueued_urls.add(link)
                                         urls_to_visit.append(link)
-                    
+                                        
                     except Exception as e:
                         logger.error(f"Error processing {url}: {e}")
-            
-            # Small delay between batches
-            if self.delay > 0 and not self.cancelled:
-                time.sleep(self.delay)
+                
+                # Delay between fetches if needed
+                if self.delay > 0 and not self.cancelled and urls_to_visit:
+                    time.sleep(self.delay)
         
         status = "cancelled" if self.cancelled else "complete"
         logger.info(f"Crawl {status}. Total pages: {len(results)}")
