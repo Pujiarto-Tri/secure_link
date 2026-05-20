@@ -454,7 +454,30 @@ class BulkActionView(View):
             messages.success(request, f'{len(detection_ids)} item ditandai sebagai sudah ditangani')
         elif action == 'mark_false_positive':
             detections.update(is_false_positive=True)
-            messages.success(request, f'{len(detection_ids)} item ditandai sebagai false positive')
+            # Auto-create Whitelist entries so future scans skip these FPs
+            whitelist_count = 0
+            for det in detections.select_related('page'):
+                _, created = Whitelist.objects.get_or_create(
+                    url=det.page.url,
+                    keyword=det.matched_text,
+                    defaults={
+                        'whitelist_type': 'keyword_url',
+                        'reason': f'Auto-created from false-positive mark (detection #{det.id})',
+                        'is_active': True,
+                    }
+                )
+                if created:
+                    whitelist_count += 1
+            if whitelist_count:
+                messages.success(
+                    request,
+                    f'{len(detection_ids)} item ditandai sebagai false positive, '
+                    f'{whitelist_count} whitelist baru dibuat'
+                )
+            else:
+                messages.success(
+                    request, f'{len(detection_ids)} item ditandai sebagai false positive'
+                )
         
         return redirect('detector:detection_list')
 
@@ -523,11 +546,11 @@ class KeywordListView(ListView):
 
 class SeedKeywordsView(View):
     """Seed database dengan kata kunci default"""
-    
+
     def post(self, request):
         detector = ContentDetector()
         created_count = 0
-        
+
         severity_map = {
             'judol': 'high',
             'obat_penguat': 'medium',
@@ -535,20 +558,23 @@ class SeedKeywordsView(View):
             'konten_dewasa': 'high',
             'penipuan': 'medium',
         }
-        
+
         for category, keywords in detector.keywords.items():
             for keyword in keywords:
+                kw_lower = keyword.lower()
+                strength = detector.DEFAULT_KEYWORD_STRENGTHS.get(category, {}).get(kw_lower, 'strong')
                 _, created = Keyword.objects.get_or_create(
                     keyword=keyword,
                     defaults={
                         'category': category,
                         'severity': severity_map.get(category, 'medium'),
-                        'is_active': True
+                        'strength': strength,
+                        'is_active': True,
                     }
                 )
                 if created:
                     created_count += 1
-        
+
         messages.success(request, f'Berhasil menambahkan {created_count} kata kunci baru')
         return redirect('detector:keyword_list')
 

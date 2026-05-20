@@ -19,10 +19,17 @@ class Keyword(models.Model):
         ('medium', 'Sedang'),
         ('high', 'Tinggi'),
     ]
-    
+
+    STRENGTH_CHOICES = [
+        ('decisive', 'Decisive — single match is high confidence'),
+        ('strong', 'Strong — needs 1 corroborating keyword'),
+        ('weak', 'Weak — needs ≥3 corroborating keywords or a decisive one'),
+    ]
+
     keyword = models.CharField(max_length=200, verbose_name='Kata Kunci')
     category = models.CharField(max_length=50, choices=CATEGORY_CHOICES, default='lainnya', verbose_name='Kategori')
     severity = models.CharField(max_length=20, choices=SEVERITY_CHOICES, default='medium', verbose_name='Tingkat Keparahan')
+    strength = models.CharField(max_length=20, choices=STRENGTH_CHOICES, default='strong', verbose_name='Kekuatan Kata Kunci')
     is_active = models.BooleanField(default=True, verbose_name='Aktif')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -106,6 +113,9 @@ class ScrapedPage(models.Model):
         ('pending', 'Menunggu'),
         ('scraped', 'Berhasil'),
         ('failed', 'Gagal'),
+        ('duplicate', 'Duplicate'),
+        ('unchanged', 'Tidak Berubah'),
+        ('skipped', 'Dilewati'),
     ]
     
     scan_session = models.ForeignKey(ScanSession, on_delete=models.CASCADE, related_name='pages', verbose_name='Sesi Pemindaian')
@@ -117,6 +127,10 @@ class ScrapedPage(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name='Status')
     http_status = models.IntegerField(null=True, blank=True, verbose_name='HTTP Status')
     error_message = models.TextField(blank=True, verbose_name='Pesan Error')
+    content_hash = models.CharField(max_length=40, blank=True, verbose_name='Content SHA1')
+    etag = models.CharField(max_length=200, blank=True, verbose_name='ETag')
+    last_modified = models.CharField(max_length=100, blank=True, verbose_name='Last-Modified')
+    has_cloaking = models.BooleanField(default=False, verbose_name='Ada Cloaking')
     scraped_at = models.DateTimeField(null=True, blank=True, verbose_name='Waktu Scrape')
     created_at = models.DateTimeField(auto_now_add=True)
     
@@ -127,6 +141,7 @@ class ScrapedPage(models.Model):
         unique_together = ['scan_session', 'url']
         indexes = [
             models.Index(fields=['scan_session', 'status']),
+            models.Index(fields=['url']),
         ]
     
     def __str__(self):

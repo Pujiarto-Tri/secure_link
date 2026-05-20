@@ -88,6 +88,7 @@ DATABASES = {
                 'PRAGMA mmap_size=134217728;'   # 128 MB
                 'PRAGMA cache_size=-20000;'     # ~20 MB page cache
             ),
+            'transaction_mode': 'IMMEDIATE',
         },
     }
 }

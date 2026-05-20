@@ -40,11 +40,11 @@ class ThreadSafeBatchedDbWriter:
         self.seen_errors = set()
         self.seen_whitelisted = set()
 
-    def add_page(self, result, page_status, error_message, detections_data, pages_scraped):
+    def add_page(self, result, page_status, error_message, detections_data, pages_scraped,
+                 content_hash='', etag='', last_modified='', has_cloaking=False):
         with self.lock:
             self.pages_scraped_count = pages_scraped
             
-            # Buffer the page
             self.pages_buffer.append({
                 'url': result['url'],
                 'domain': result.get('domain', '') or '',
@@ -54,7 +54,11 @@ class ThreadSafeBatchedDbWriter:
                 'http_status': result.get('http_status'),
                 'status': page_status,
                 'error_message': error_message or '',
-                'detections': detections_data
+                'detections': detections_data,
+                'content_hash': content_hash or result.get('content_hash', ''),
+                'etag': etag or result.get('etag', ''),
+                'last_modified': last_modified or result.get('last_modified', ''),
+                'has_cloaking': has_cloaking or result.get('has_cloaking', False),
             })
             
             self.total_issues_count += len(detections_data)
@@ -100,9 +104,29 @@ class ThreadSafeBatchedDbWriter:
                             'http_status': p['http_status'],
                             'status': p['status'],
                             'error_message': p['error_message'],
+                            'content_hash': p.get('content_hash', ''),
+                            'etag': p.get('etag', ''),
+                            'last_modified': p.get('last_modified', ''),
+                            'has_cloaking': p.get('has_cloaking', False),
                             'scraped_at': timezone.now()
                         }
                     )
+                    # Update etag/last_modified even for existing pages (keep freshest)
+                    update_fields = []
+                    if not page.content_hash and p.get('content_hash'):
+                        page.content_hash = p['content_hash']
+                        update_fields.append('content_hash')
+                    if not page.etag and p.get('etag'):
+                        page.etag = p['etag']
+                        update_fields.append('etag')
+                    if not page.last_modified and p.get('last_modified'):
+                        page.last_modified = p['last_modified']
+                        update_fields.append('last_modified')
+                    if not page.has_cloaking and p.get('has_cloaking'):
+                        page.has_cloaking = True
+                        update_fields.append('has_cloaking')
+                    if update_fields:
+                        page.save(update_fields=update_fields)
                     
                     # Grouped detections
                     for category, det in p['detections'].items():
@@ -172,9 +196,20 @@ def _run_scan(session_pk: int):
         detector.load_keywords_from_db(active_keywords)
         
         keyword_map = {kw.keyword.lower(): kw for kw in active_keywords}
-        
+        keyword_strength_map = {kw.keyword.lower(): kw.strength for kw in active_keywords}
+
         active_whitelist = Whitelist.objects.filter(is_active=True)
         detector.load_whitelist_from_db(active_whitelist)
+        
+        # Load stored ETag/Last-Modified from previous scans for incremental updates
+        stored_metadata = {}
+        previous_pages = ScrapedPage.objects.filter(
+            url__isnull=False
+        ).exclude(etag='', last_modified='').only('url', 'etag', 'last_modified')
+        # Build dict only for pages where both etag and last_modified exist
+        for pp in previous_pages:
+            if pp.etag or pp.last_modified:
+                stored_metadata[pp.url] = (pp.etag, pp.last_modified)
         
         # Initialize concurrent crawler
         scraper = WebScraper(
@@ -183,7 +218,7 @@ def _run_scan(session_pk: int):
             timeout=30,
             max_pages=scan_session.max_pages,
             scan_subdomains=scan_session.scan_subdomains,
-            max_workers=12
+            max_workers=12,
         )
         
         def process_page_realtime(result, pages_scraped, max_pages):
@@ -194,6 +229,27 @@ def _run_scan(session_pk: int):
                 return
 
             url = result.get('url', '')
+            
+            # Handle incremental/skip results
+            if result.get('unchanged'):
+                page_status = 'unchanged'
+                if pages_scraped % 10 == 0:
+                    db_writer.add_log('success', f'[{pages_scraped}/{max_pages}] Tidak berubah (304): {url[:60]}', url=url)
+                db_writer.add_page(
+                    result=result, page_status=page_status, error_message='',
+                    detections_data={}, pages_scraped=pages_scraped,
+                    content_hash='', etag=result.get('etag', ''), last_modified=result.get('last_modified', ''),
+                )
+                return
+            
+            if result.get('duplicate_hash'):
+                page_status = 'duplicate'
+                db_writer.add_page(
+                    result=result, page_status=page_status, error_message='Duplicate content',
+                    detections_data={}, pages_scraped=pages_scraped,
+                    content_hash=result.get('content_hash', ''),
+                )
+                return
             
             # Log success/failure with throttling
             page_status = 'failed'
@@ -208,15 +264,36 @@ def _run_scan(session_pk: int):
                     db_writer.seen_errors.add(error_message)
                     db_writer.add_log('error', f'[{pages_scraped}/{max_pages}] Gagal: {url[:60]} - {error_message}', url=url)
             
-            # Perform Content Detection if scraped successfully
+            # Stage A (two-stage): quick Aho-Corasick check on raw body
+            # If no hits at all, skip full parsing + detection
             category_groups = {}
-            if result.get('success'):
+            if result.get('success') and not result.get('duplicate_hash'):
+                raw_text = result.get('raw_text', '')
+                if raw_text and not detector.has_any_hits(raw_text):
+                    if pages_scraped % 50 == 0:
+                        db_writer.add_log('info', f'⚡ Stage A clean: {url[:60]} (skipped deep scan)', url=url)
+                    db_writer.add_page(
+                        result=result, page_status=page_status, error_message=error_message,
+                        detections_data={}, pages_scraped=pages_scraped,
+                        content_hash=result.get('content_hash', ''),
+                        etag=result.get('etag', ''), last_modified=result.get('last_modified', ''),
+                        has_cloaking=result.get('has_cloaking', False),
+                    )
+                    return
+                
+                # Stage B: full detection
+                has_cloaking = result.get('has_cloaking', False)
+                cloaked_snippets = result.get('cloaked_snippets', [])
+                
                 detections, confidence_score, safe_context = detector.detect_in_sections(
                     title=result.get('title', ''),
                     meta_description=result.get('meta_description', ''),
                     content=result.get('content', ''),
                     url=url,
-                    outbound_links=result.get('outbound_links')
+                    outbound_links=result.get('outbound_links'),
+                    keyword_strengths=keyword_strength_map,
+                    has_cloaking=has_cloaking,
+                    cloaked_snippets=cloaked_snippets,
                 )
                 
                 safe_context_str = ', '.join(safe_context) if safe_context else ''
@@ -294,11 +371,15 @@ def _run_scan(session_pk: int):
                 page_status=page_status,
                 error_message=error_message,
                 detections_data=category_groups,
-                pages_scraped=pages_scraped
+                pages_scraped=pages_scraped,
+                content_hash=result.get('content_hash', ''),
+                etag=result.get('etag', ''),
+                last_modified=result.get('last_modified', ''),
+                has_cloaking=result.get('has_cloaking', False),
             )
             
         # Run Web Crawler
-        results = scraper.crawl(scan_session.target_url, callback=process_page_realtime)
+        results = scraper.crawl(scan_session.target_url, callback=process_page_realtime, stored_metadata=stored_metadata)
         
         # Flush any remaining items in the buffer
         db_writer.force_flush()

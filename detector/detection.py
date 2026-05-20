@@ -2,7 +2,8 @@
 Content Detector - Engine untuk mendeteksi konten negatif
 """
 import re
-from typing import List, Dict, Tuple
+import ahocorasick
+from typing import List, Dict, Tuple, Optional
 from urllib.parse import urlparse
 
 
@@ -109,33 +110,30 @@ class ContentDetector:
         self.compile_patterns()
     
     def compile_patterns(self):
-        """Compile keyword and safe context patterns for each category to scan in a single pass."""
-        self._compiled_patterns = {}
+        """Build a single Aho-Corasick automaton for all keywords across all categories, 
+        plus safe-context patterns."""
         self._keyword_casing_map = {}
+        self._automaton = ahocorasick.Automaton()
+        
         for category, keywords in self.keywords.items():
-            if not keywords:
-                continue
-            # Sort by length descending so longer words match first in alternation
-            sorted_kws = sorted(set(k.lower() for k in keywords if k), key=len, reverse=True)
-            if sorted_kws:
-                for kw in keywords:
-                    if kw:
-                        self._keyword_casing_map[kw.lower()] = kw
-                pattern_str = r'\b(?:' + '|'.join(re.escape(k) for k in sorted_kws) + r')\b'
-                self._compiled_patterns[category] = re.compile(pattern_str, re.IGNORECASE)
-
-        self._compiled_safe_patterns = {}
+            for kw in keywords:
+                if kw:
+                    kw_lower = kw.lower()
+                    self._keyword_casing_map[kw_lower] = kw
+                    self._automaton.add_word(kw_lower, (category, kw_lower))
+        
+        self._automaton.make_automaton()
+        
+        # Safe-context: separate automaton (used selectively, not in two-stage pass)
         self._safe_keyword_casing_map = {}
+        self._safe_automaton = ahocorasick.Automaton()
         for category, keywords in self.SAFE_CONTEXT_KEYWORDS.items():
-            if not keywords:
-                continue
-            sorted_kws = sorted(set(k.lower() for k in keywords if k), key=len, reverse=True)
-            if sorted_kws:
-                for kw in keywords:
-                    if kw:
-                        self._safe_keyword_casing_map[kw.lower()] = kw
-                pattern_str = r'\b(?:' + '|'.join(re.escape(k) for k in sorted_kws) + r')\b'
-                self._compiled_safe_patterns[category] = re.compile(pattern_str, re.IGNORECASE)
+            for kw in keywords:
+                if kw:
+                    kw_lower = kw.lower()
+                    self._safe_keyword_casing_map[kw_lower] = kw
+                    self._safe_automaton.add_word(kw_lower, (category, kw_lower))
+        self._safe_automaton.make_automaton()
     
     def load_keywords_from_db(self, keyword_queryset):
         """
@@ -201,160 +199,225 @@ class ContentDetector:
     
     def detect(self, text: str, context_length: int = 100) -> List[Dict]:
         """
-        Mendeteksi konten negatif dalam teks
-        
-        Args:
-            text: Teks yang akan diperiksa
-            context_length: Panjang konteks di sekitar kata kunci yang ditemukan
-            
-        Returns:
-            List of dictionaries berisi informasi deteksi
+        Mendeteksi konten negatif dalam teks menggunakan Aho-Corasick automaton.
+        Single-pass matching regardless of keyword count.
         """
-        detections = []
-        if not hasattr(self, '_compiled_patterns'):
+        if not hasattr(self, '_automaton'):
             self.compile_patterns()
+        
+        detections = []
+        text_lower = text.lower()
+        
+        for end_idx, (category, kw_lower) in self._automaton.iter(text_lower):
+            start_idx = end_idx - len(kw_lower) + 1
             
-        for category, pattern in self._compiled_patterns.items():
-            for match in pattern.finditer(text):
-                matched_text = match.group(0)
-                matched_text_lower = matched_text.lower()
-                keyword = self._keyword_casing_map.get(matched_text_lower, matched_text)
-                
-                start = max(0, match.start() - context_length)
-                end = min(len(text), match.end() + context_length)
-                context = text[start:end]
-                
-                # Tambahkan penanda awal dan akhir konteks
-                if start > 0:
-                    context = '...' + context
-                if end < len(text):
-                    context = context + '...'
-                
-                detections.append({
-                    'keyword': keyword,
-                    'matched_text': matched_text,
-                    'category': category,
-                    'context': context,
-                    'position': match.start(),
-                })
+            # Word boundary check (Aho-Corasick does substring matching)
+            if start_idx > 0 and text_lower[start_idx - 1].isalnum():
+                continue
+            if end_idx + 1 < len(text_lower) and text_lower[end_idx + 1].isalnum():
+                continue
+            
+            keyword = self._keyword_casing_map.get(kw_lower, kw_lower)
+            matched_text = text[start_idx:end_idx + 1]
+            
+            ctx_start = max(0, start_idx - context_length)
+            ctx_end = min(len(text), end_idx + 1 + context_length)
+            context = text[ctx_start:ctx_end]
+            
+            if ctx_start > 0:
+                context = '...' + context
+            if ctx_end < len(text):
+                context = context + '...'
+            
+            detections.append({
+                'keyword': keyword,
+                'matched_text': matched_text,
+                'category': category,
+                'context': context,
+                'position': start_idx,
+            })
         
         return detections
     
     def find_safe_context(self, text: str, category: str) -> List[str]:
         """
-        Mencari kata-kata konteks aman dalam teks
-        
-        Args:
-            text: Teks yang akan diperiksa
-            category: Kategori keyword yang terdeteksi
-            
-        Returns:
-            List kata-kata safe context yang ditemukan
+        Mencari kata-kata konteks aman dalam teks menggunakan Aho-Corasick.
+        Filtered by category after matching.
         """
-        if not hasattr(self, '_compiled_safe_patterns'):
+        if not hasattr(self, '_safe_automaton'):
             self.compile_patterns()
+        
+        text_lower = text.lower()
+        matches = []
+        
+        for end_idx, (match_category, kw_lower) in self._safe_automaton.iter(text_lower):
+            if match_category != category:
+                continue
+            start_idx = end_idx - len(kw_lower) + 1
             
-        pattern = self._compiled_safe_patterns.get(category)
-        if not pattern:
-            return []
+            # Word boundary check
+            if start_idx > 0 and text_lower[start_idx - 1].isalnum():
+                continue
+            if end_idx + 1 < len(text_lower) and text_lower[end_idx + 1].isalnum():
+                continue
             
-        matches = pattern.findall(text)
-        return list(set(self._safe_keyword_casing_map.get(m.lower(), m) for m in matches))
+            keyword = self._safe_keyword_casing_map.get(kw_lower, kw_lower)
+            if keyword not in matches:
+                matches.append(keyword)
+        
+        return matches
     
+    # Keyword strength tiers — maps category -> keyword -> strength
+    # decisive: single match is high confidence (e.g. misoprostol, slot gacor)
+    # strong:   needs 1 corroborating keyword
+    # weak:     needs >=3 corroborating keywords or a decisive one
+    DEFAULT_KEYWORD_STRENGTHS = {
+        'judol': {
+            'slot gacor': 'decisive', 'maxwin': 'decisive', 'rtp live': 'decisive',
+            'pragmatic': 'decisive', 'pg soft': 'decisive', 'mahjong ways': 'decisive',
+            'sweet bonanza': 'decisive', 'gates of olympus': 'decisive',
+            'starlight princess': 'decisive', 'wild west gold': 'decisive',
+            'slot88': 'decisive', 'slot777': 'decisive', 'joker123': 'decisive',
+            'habanero': 'decisive', 'slot gacor hari ini': 'decisive',
+            'rtp tertinggi': 'decisive', 'scatter hitam': 'decisive',
+            'wild multiplier': 'decisive', 'bandar togel': 'decisive',
+            'bandar judi': 'decisive', 'situs judi': 'decisive',
+            'agen slot': 'decisive', 'agen togel': 'decisive', 'toto gelap': 'decisive',
+            'link alternatif': 'decisive', 'daftar slot': 'decisive',
+            'bocoran slot': 'decisive', 'pola slot': 'decisive', 'jam gacor': 'decisive',
+            'freespin': 'decisive', 'bonus new member': 'decisive',
+            'prediksi hk': 'decisive', 'prediksi sgp': 'decisive',
+            'prediksi sydney': 'decisive', 'colok bebas': 'decisive',
+            'colok naga': 'decisive', 'wd cepat': 'decisive', 'wd lancar': 'decisive',
+            'depo pulsa': 'decisive', 'depo dana': 'decisive', 'cashback slot': 'decisive',
+            'cashback turnover': 'decisive', 'referral judi': 'decisive',
+            'forex bodong': 'decisive', 'crypto judi': 'decisive',
+            'slot online': 'strong', 'judi online': 'strong', 'taruhan': 'strong',
+            'betting': 'strong', 'bonus deposit': 'strong', 'deposit pulsa': 'strong',
+            'spin gratis': 'strong', 'akun pro': 'strong', 'akun demo': 'strong',
+            'vip member': 'strong', 'rtp slot': 'strong', 'live casino': 'strong',
+            'sportsbook': 'strong', 'bandar bola': 'strong',
+            'slot': 'weak', 'togel': 'weak', 'poker': 'weak', 'casino': 'weak',
+            'jackpot': 'weak', 'scatter': 'weak', 'olympus': 'weak', 'turnover': 'weak',
+            'gacor': 'weak',
+        },
+        'obat_aborsi': {
+            'misoprostol': 'decisive', 'cytotec': 'decisive', 'gastrul': 'decisive',
+            'obat aborsi': 'decisive', 'obat penggugur': 'decisive',
+            'klinik aborsi': 'decisive', 'obat gugurkan': 'decisive',
+            'obat telat bulan': 'decisive', 'cara menggugurkan': 'decisive',
+            'gugurkan kandungan': 'decisive', 'obat tuntas': 'decisive',
+            'obat ampuh gugur': 'decisive', 'gugurkan rahim': 'decisive',
+            'obat rahim aborsi': 'decisive', 'bersihkan rahim': 'decisive',
+        },
+        'obat_penguat': {
+            'viagra': 'decisive', 'cialis': 'decisive', 'levitra': 'decisive',
+            'hammer of thor': 'decisive', 'titan gel': 'decisive', 'klg pills': 'decisive',
+            'vimax': 'decisive', 'obat kuat dewasa': 'decisive',
+            'mr p': 'weak',
+        },
+        'konten_dewasa': {
+            'bokep': 'decisive', 'onlyfans': 'decisive', 'escort': 'decisive',
+            'pijat plus': 'decisive', 'spa plus': 'decisive', 'open bo': 'decisive',
+            'open vcs': 'decisive',
+            'xxx': 'weak', 'nude': 'weak', 'naked': 'weak',
+        },
+        'penipuan': {
+            'pinjol': 'decisive', 'money game': 'decisive', 'ponzi': 'decisive',
+            'binary option': 'decisive', 'robot trading': 'decisive',
+            'investasi bodong': 'decisive', 'profit pasti': 'decisive',
+            'double profit': 'decisive', 'pinjaman online': 'decisive',
+            'kredit tanpa jaminan': 'decisive',
+        },
+    }
+
     def calculate_confidence_score(
-        self, 
-        detections: List[Dict], 
-        full_text: str, 
-        title: str = '', 
+        self,
+        detections: List[Dict],
+        full_text: str,
+        title: str = '',
         url: str = '',
-        outbound_links: List[str] = None
+        outbound_links: List[str] = None,
+        keyword_strengths: Dict[str, str] = None,
+        has_cloaking: bool = False,
+        cloaked_snippets: List[str] = None,
     ) -> Tuple[float, List[str]]:
         """
-        Menghitung confidence score berdasarkan konteks bukti yang kaya
-        
-        Args:
-            detections: List hasil deteksi di halaman ini
-            full_text: Seluruh teks halaman (title + meta + content)
-            title: Judul halaman
-            url: URL halaman
-            outbound_links: List URL outbound eksternal dari halaman ini
-            
-        Returns:
-            Tuple: (confidence_score 0.0-1.0, list safe_context_found)
+        Menghitung confidence score berdasarkan evidence aggregation.
+
+        Builds from 0.0 — a single weak match without supporting evidence stays low.
         """
         if not detections:
             return 0.0, []
-        
-        # Base score dimulai dari 0.70
-        score = 0.70
+
+        score = 0.0
         all_safe_context = []
-        
-        # Kumpulkan semua kategori yang terdeteksi
         categories = set(d['category'] for d in detections)
-        
-        # Cek safe context untuk setiap kategori
+
+        # Collect safe context per category
         for category in categories:
             safe_words = self.find_safe_context(full_text, category)
             all_safe_context.extend(safe_words)
+
+        # ---- Factor 1: Keyword strength tier ----
+        strengths_found = set()
+        strengths = keyword_strengths
+        if strengths is None:
+            strengths = {}
+            for cat, kw_map in self.DEFAULT_KEYWORD_STRENGTHS.items():
+                strengths.update(kw_map)
         
-        # Faktor 1: Jumlah safe context ditemukan
-        # Lebih banyak safe context = score lebih rendah
-        num_safe = len(set(all_safe_context))  # unique safe words
-        if num_safe > 0:
-            # Setiap safe word mengurangi score 0.15, maksimal 0.50 reduksi
-            reduction = min(num_safe * 0.15, 0.50)
-            score -= reduction
-        
-        # Faktor 2: Rasio keyword negatif vs panjang teks (Density)
-        num_detections = len(detections)
-        text_length = len(full_text)
-        
-        if text_length > 1000:
-            density = num_detections / text_length
-            if density < 0.0005:  # < 0.05%
-                score -= 0.15
-            if num_detections == 1:
-                # Hanya 1 kata kunci di seluruh tubuh teks yang besar -> kemungkinan tinggi FP
-                score -= 0.25
-        
-        # Faktor 3: Lokasi deteksi
-        locations = set(d.get('location', 'content') for d in detections)
-        if 'title' in locations:
-            score += 0.15
-        if 'meta' in locations:
+        for d in detections:
+            s = strengths.get(d['keyword'].lower())
+            if s:
+                strengths_found.add(s)
+
+        if 'decisive' in strengths_found:
+            score += 0.60
+        elif 'strong' in strengths_found:
+            score += 0.35
+        # weak only: no strength bonus (stays near 0)
+
+        # ---- Factor 2: Keyword diversity ----
+        unique_keywords = set(d['keyword'].lower() for d in detections)
+        if len(unique_keywords) >= 3:
+            score += 0.20
+        elif len(unique_keywords) >= 2:
             score += 0.10
-        if 'title' not in locations and 'meta' not in locations:
-            # Hanya ada di content
-            score -= 0.05
-        
-        # Faktor 4: Keyword Diversity
-        # Hitung keunikan kata kunci negatif yang cocok
-        unique_negative_keywords = set(d['keyword'].lower() for d in detections)
-        if len(unique_negative_keywords) >= 3:
-            score += 0.15
-        elif len(unique_negative_keywords) >= 2:
-            score += 0.05
-            
-        # Faktor 5: Proximity Clustering
-        # Cek jika ada >= 3 hits kata kunci yang berdekatan dalam 300 karakter
+
+        # ---- Factor 3: Proximity clustering ----
         positions = sorted(d.get('position', 0) for d in detections if d.get('position') is not None)
         has_cluster = False
         if len(positions) >= 3:
             for i in range(len(positions) - 2):
-                if positions[i+2] - positions[i] <= 300:
+                if positions[i + 2] - positions[i] <= 300:
                     has_cluster = True
                     break
         if has_cluster:
             score += 0.15
 
-        # Faktor 6: Analisis Outbound Link
-        # Cari pola mencurigakan pada tautan keluar (outbound links)
+        # ---- Factor 4: Location (title / meta) ----
+        locations = set(d.get('location', 'content') for d in detections)
+        if 'title' in locations:
+            score += 0.15
+        if 'meta' in locations:
+            score += 0.10
+
+        # ---- Factor 5: Keyword density ----
+        num_detections = len(detections)
+        text_length = len(full_text)
+        if text_length > 0:
+            density = num_detections / text_length
+            if density > 0.002:   # > 2 hits per 1000 chars
+                score += 0.10
+
+        # ---- Factor 6: Suspicious outbound links ----
         has_suspicious_outbound = False
         if outbound_links:
             suspicious_patterns = re.compile(
                 r'slot|togel|gacor|judi|bola|maxwin|casino|poker|betting|'
                 r'\.xyz\b|\.online\b|\.win\b|\.bet\b|\.live\b|\.cc\b|\.top\b|\.vip\b|\.site\b',
-                re.IGNORECASE
+                re.IGNORECASE,
             )
             for link in outbound_links:
                 parsed_link = urlparse(link)
@@ -363,89 +426,127 @@ class ContentDetector:
                 if suspicious_patterns.search(link_host) or suspicious_patterns.search(link_path):
                     has_suspicious_outbound = True
                     break
-        
+
         if has_suspicious_outbound:
-            # Jika ada tautan ke judi/slot di situs pemerintahan .go.id, hampir pasti 100% defacement
             if url and '.go.id' in url.lower():
                 score = max(score, 0.98)
             else:
                 score += 0.25
 
-        # Faktor 7: Institution & News Dampening
+        # ---- Factor 7: Safe-context dampening ----
+        num_safe = len(set(all_safe_context))
+        if num_safe > 0:
+            score -= min(num_safe * 0.08, 0.30)
+
+        # ---- Factor 8: Institution / news dampening ----
         dampen = False
         if categories.intersection({'obat_aborsi', 'obat_penguat'}):
-            health_institutions = ['puskesmas', 'rsud', 'rumah sakit', 'dinas kesehatan', 'posyandu', 'kemenkes', 'sehat', 'health']
-            news_contexts = ['berita', 'artikel', 'info', 'news', 'edukasi', 'penyuluhan', 'sosialisasi']
-            
+            health_institutions = [
+                'puskesmas', 'rsud', 'rumah sakit', 'dinas kesehatan',
+                'posyandu', 'kemenkes', 'sehat', 'health',
+            ]
+            news_contexts = [
+                'berita', 'artikel', 'info', 'news', 'edukasi',
+                'penyuluhan', 'sosialisasi',
+            ]
             title_lower = title.lower()
             url_lower = url.lower()
-            
-            for keyword in health_institutions + news_contexts:
-                if keyword in title_lower or keyword in url_lower:
+            for kw in health_institutions + news_contexts:
+                if kw in title_lower or kw in url_lower:
                     dampen = True
                     break
-                    
         if dampen:
-            score -= 0.35
-            
-        # Faktor 8: Domain pemerintah dengan kategori kesehatan/dewasa/penipuan
+            score -= 0.25
+
+        # ---- Factor 9: Government domain (non-judol/penipuan categories) ----
         if url and '.go.id' in url.lower():
             if 'judol' not in categories and 'penipuan' not in categories:
-                score -= 0.10
-        
-        # Batasi rentang score ke [0.0, 1.0]
+                score -= 0.15
+
+        # ---- Factor 10: Hidden/cloaked content boost ----
+        if has_cloaking:
+            # Check if any detections are inside cloaked regions
+            if cloaked_snippets:
+                for snippet in cloaked_snippets:
+                    snippet_lower = snippet.lower()
+                    for d in detections:
+                        if d['keyword'].lower() in snippet_lower:
+                            score += 0.20
+                            break
+            # General cloaking boost for any detection on a cloaked page
+            score += 0.10
+
         score = max(0.0, min(1.0, score))
-        
         return round(score, 2), list(set(all_safe_context))
     
-    def detect_in_sections(self, title: str, meta_description: str, content: str, url: str = '', outbound_links: List[str] = None) -> Tuple[List[Dict], float, List[str]]:
+    def has_any_hits(self, raw_text: str) -> bool:
+        """
+        Stage A (two-stage detection): quick check if raw response body has any keyword hits.
+        Runs the cheap Aho-Corasick pass; returns True if any keyword found, False otherwise.
+        """
+        if not hasattr(self, '_automaton'):
+            self.compile_patterns()
+        text_lower = raw_text.lower()
+        for end_idx, (category, kw_lower) in self._automaton.iter(text_lower):
+            start_idx = end_idx - len(kw_lower) + 1
+            if start_idx > 0 and text_lower[start_idx - 1].isalnum():
+                continue
+            if end_idx + 1 < len(text_lower) and text_lower[end_idx + 1].isalnum():
+                continue
+            return True
+        return False
+
+    def detect_in_sections(self, title: str, meta_description: str, content: str, url: str = '', outbound_links: List[str] = None, keyword_strengths: Dict[str, str] = None, has_cloaking: bool = False, cloaked_snippets: List[str] = None) -> Tuple[List[Dict], float, List[str]]:
         """
         Mendeteksi konten negatif di berbagai bagian halaman
-        
+
         Args:
             title: Judul halaman
             meta_description: Meta description halaman
             content: Konten utama halaman
             url: URL halaman (untuk analisis konteks)
             outbound_links: List URL outbound eksternal dari halaman ini
-            
+            keyword_strengths: Dict mapping keyword (lowercase) -> strength tier
+
         Returns:
             Tuple: (list deteksi, confidence_score, list safe_context_found)
         """
         all_detections = []
-        
+
         # Detect in title
         title_detections = self.detect(title, context_length=50)
         for d in title_detections:
             d['location'] = 'title'
             d['severity'] = 'high'  # Konten negatif di title lebih serius
             all_detections.append(d)
-        
+
         # Detect in meta description
         meta_detections = self.detect(meta_description, context_length=100)
         for d in meta_detections:
             d['location'] = 'meta'
             d['severity'] = 'high'
             all_detections.append(d)
-        
+
         # Detect in content
         content_detections = self.detect(content, context_length=150)
         for d in content_detections:
             d['location'] = 'content'
             d['severity'] = 'medium'
             all_detections.append(d)
-        
+
         # Hitung confidence score berdasarkan konteks
         full_text = f"{title} {meta_description} {content}"
         confidence_score, safe_context = self.calculate_confidence_score(
-            all_detections, full_text, title, url, outbound_links=outbound_links
+            all_detections, full_text, title, url,
+            outbound_links=outbound_links, keyword_strengths=keyword_strengths,
+            has_cloaking=has_cloaking, cloaked_snippets=cloaked_snippets,
         )
-        
+
         # Tambahkan confidence ke setiap deteksi
         for d in all_detections:
             d['confidence_score'] = confidence_score
             d['safe_context_found'] = safe_context
-        
+
         return all_detections, confidence_score, safe_context
     
     def get_summary(self, detections: List[Dict]) -> Dict:
